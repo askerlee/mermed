@@ -1,10 +1,20 @@
 import io
 import json
+import os
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from compare_logprobs import _huggingface_placement, query_openrouter
+from compare_logprobs import (
+    GenerationStep,
+    ModelResult,
+    TokenLogprob,
+    _huggingface_placement,
+    main,
+    query_openrouter,
+)
 
 
 class FakeResponse(io.BytesIO):
@@ -84,6 +94,54 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(result.steps[0].top_tokens[1].token, " Lyon")
         self.assertAlmostEqual(
             result.steps[0].top_tokens[0].probability, 0.904837, places=6
+        )
+
+
+class MainWorkflowTest(unittest.TestCase):
+    def test_huggingface_is_teacher_forced_with_openrouter_tokens(self):
+        reference_steps = [
+            GenerationStep(" first", [TokenLogprob(" first", -0.1)]),
+            GenerationStep(" second", [TokenLogprob(" second", -0.2)]),
+        ]
+        openrouter_result = ModelResult(
+            "openrouter", "remote/model", " first second", reference_steps
+        )
+        huggingface_result = ModelResult(
+            "huggingface",
+            "local/model",
+            " first second",
+            reference_steps,
+            teacher_forced=True,
+        )
+        args = Namespace(
+            prompt="prompt",
+            openrouter_model="remote/model",
+            hf_model="local/model",
+            top_k=20,
+            max_new_tokens=2,
+            device="cpu",
+            json_output=None,
+        )
+
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            patch("compare_logprobs.parse_args", return_value=args),
+            patch(
+                "compare_logprobs.query_openrouter",
+                return_value=openrouter_result,
+            ),
+            patch(
+                "compare_logprobs.query_huggingface",
+                return_value=huggingface_result,
+            ) as query_huggingface,
+            redirect_stdout(io.StringIO()),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            query_huggingface.call_args.kwargs["reference_tokens"],
+            [" first", " second"],
         )
 
 

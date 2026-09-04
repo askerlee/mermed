@@ -34,10 +34,15 @@ than one is available. This uses Hugging Face Accelerate's `device_map="auto"`.
 `--device cuda`, or a specific device such as `--device cuda:1` to force the
 entire model onto one device.
 
-Both models start with the same user prompt, but generate independently after
-that. Their contexts can therefore diverge after the first generated token.
-The local model's chat template is applied automatically when it has one.
+OpenRouter generates the reference continuation. At every OpenRouter token
+boundary, the local model is evaluated after the same accumulated response
+text. Its top prediction is recorded but not appended; the next OpenRouter
+reference token is appended instead. This teacher forcing keeps the response
+text shared even when the models disagree. Each provider still applies its own
+model-specific chat template.
 
 Token IDs are not comparable across different tokenizers. The displayed
-overlap count compares exact decoded token strings only; the ranked logprobs
-and probabilities are the primary output.
+overlap count compares exact decoded token strings only. Comparison checkpoints
+use OpenRouter's token boundaries, which may not be token boundaries for the
+Hugging Face model; the ranked logprobs and probabilities are the primary
+output.

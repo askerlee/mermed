@@ -37,6 +37,7 @@ class ModelResult:
     model: str
     generated_text: str
     steps: list[GenerationStep]
+    teacher_forced: bool = False
 
 
 def _huggingface_placement(
@@ -130,6 +131,7 @@ def query_huggingface(
     top_k: int,
     max_new_tokens: int,
     device: str | None,
+    reference_tokens: list[str] | None = None,
 ) -> ModelResult:
     try:
         import torch
@@ -156,23 +158,40 @@ def query_huggingface(
         else model.get_input_embeddings().weight.device
     )
 
-    local_prompt = prompt
-    if tokenizer.chat_template:
-        local_prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-    encoded = tokenizer(local_prompt, return_tensors="pt", add_special_tokens=True)
-    input_ids = encoded["input_ids"].to(input_device)
-    attention_mask = encoded.get("attention_mask")
-    if attention_mask is not None:
-        attention_mask = attention_mask.to(input_device)
-
     generated_ids: list[int] = []
     steps: list[GenerationStep] = []
+    reference_prefix = ""
+    step_count = len(reference_tokens) if reference_tokens is not None else max_new_tokens
     with torch.inference_mode():
-        for _ in range(max_new_tokens):
+        for step_index in range(step_count):
+            if tokenizer.chat_template:
+                messages = [{"role": "user", "content": prompt}]
+                if reference_prefix:
+                    messages.append(
+                        {"role": "assistant", "content": reference_prefix}
+                    )
+                    local_prompt = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        continue_final_message=True,
+                    )
+                else:
+                    local_prompt = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+            else:
+                local_prompt = prompt + reference_prefix
+
+            encoded = tokenizer(
+                local_prompt, return_tensors="pt", add_special_tokens=True
+            )
+            input_ids = encoded["input_ids"].to(input_device)
+            attention_mask = encoded.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(input_device)
+
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
             logprobs = torch.log_softmax(outputs.logits[0, -1].float(), dim=-1)
             count = min(top_k, logprobs.shape[-1])
@@ -195,21 +214,24 @@ def query_huggingface(
             )
             generated_ids.append(next_token_id)
 
-            next_token = torch.tensor([[next_token_id]], device=input_device)
-            input_ids = torch.cat((input_ids, next_token), dim=1)
-            if attention_mask is not None:
-                attention_mask = torch.cat(
-                    (attention_mask, torch.ones_like(next_token)), dim=1
-                )
+            if reference_tokens is not None:
+                reference_prefix += reference_tokens[step_index]
+                continue
 
             if next_token_id == tokenizer.eos_token_id:
                 break
+            reference_prefix += generated_token
 
     return ModelResult(
         provider="huggingface",
         model=model_name_or_path,
-        generated_text=tokenizer.decode(generated_ids),
+        generated_text=(
+            reference_prefix
+            if reference_tokens is not None
+            else tokenizer.decode(generated_ids)
+        ),
         steps=steps,
+        teacher_forced=reference_tokens is not None,
     )
 
 
@@ -220,8 +242,11 @@ def _token_label(token: str) -> str:
 def print_comparison(left: ModelResult, right: ModelResult) -> None:
     print(f"OpenRouter:   {left.model}")
     print(f"Hugging Face: {right.model}")
-    print(f"OpenRouter generated:   {left.generated_text!r}")
-    print(f"Hugging Face generated: {right.generated_text!r}")
+    print(f"Reference continuation (OpenRouter): {left.generated_text!r}")
+    if right.teacher_forced:
+        print("Hugging Face was teacher-forced along that continuation.")
+    else:
+        print(f"Hugging Face generated: {right.generated_text!r}")
 
     step_count = max(len(left.steps), len(right.steps))
     for step_index in range(step_count):
@@ -234,8 +259,8 @@ def print_comparison(left: ModelResult, right: ModelResult) -> None:
             right_tokens = {item.token for item in right_step.top_tokens}
             overlap = left_tokens & right_tokens
             print(
-                f"generated: {_token_label(left_step.generated_token)} vs "
-                f"{_token_label(right_step.generated_token)}; "
+                f"reference token: {_token_label(left_step.generated_token)}; "
+                f"HF top prediction: {_token_label(right_step.generated_token)}; "
                 f"exact decoded-token overlap: {len(overlap)}"
             )
 
@@ -268,8 +293,10 @@ def save_json(path: Path, prompt: str, left: ModelResult, right: ModelResult) ->
     output: dict[str, Any] = {
         "prompt": prompt,
         "note": (
-            "Models generate independently. Token strings are decoded with different "
-            "tokenizers, so exact token overlap is only a surface-form comparison."
+            "The OpenRouter output is the reference continuation. Hugging Face is "
+            "teacher-forced along the same accumulated text. Token strings are "
+            "decoded with different tokenizers, so exact token overlap is only a "
+            "surface-form comparison."
         ),
         "results": [asdict(left), asdict(right)],
     }
@@ -326,6 +353,9 @@ def main() -> int:
             args.top_k,
             args.max_new_tokens,
             args.device,
+            reference_tokens=[
+                step.generated_token for step in openrouter_result.steps
+            ],
         )
     except RuntimeError as error:
         print(f"error: {error}", file=sys.stderr)
