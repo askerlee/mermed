@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -124,6 +125,25 @@ def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
     return float(2 ** (attempt - 1))
 
 
+def _provider_top_logprobs_limit(details: str) -> int | None:
+    match = re.search(r"top_logprobs.*?\[0,\s*(\d+)\]", details, re.DOTALL)
+    return int(match.group(1)) if match else None
+
+
+def _openrouter_request(payload: dict[str, Any], api_key: str) -> urllib.request.Request:
+    return urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/askerlee/mermed",
+            "X-Title": "mermed logprob comparison",
+        },
+        method="POST",
+    )
+
+
 def load_huggingface_model(
     model_name_or_path: str,
     device: str | None = None,
@@ -191,36 +211,45 @@ def query_openrouter(
         "reasoning": {"effort": "none"},
         "provider": {"require_parameters": True},
     }
-    request = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/askerlee/mermed",
-            "X-Title": "mermed logprob comparison",
-        },
-        method="POST",
-    )
+    request = _openrouter_request(payload, api_key)
 
-    for attempt in range(1, _OPENROUTER_MAX_ATTEMPTS + 1):
+    transient_failures = 0
+    adapted_top_k = False
+    while True:
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
                 body = json.load(response)
             break
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
+            provider_top_k = _provider_top_logprobs_limit(details)
+            if (
+                error.code == 400
+                and not adapted_top_k
+                and provider_top_k is not None
+                and provider_top_k < payload["top_logprobs"]
+            ):
+                print(
+                    f"OpenRouter provider limits top_logprobs to {provider_top_k}; "
+                    "retrying with that limit",
+                    file=sys.stderr,
+                )
+                payload["top_logprobs"] = provider_top_k
+                request = _openrouter_request(payload, api_key)
+                adapted_top_k = True
+                continue
             if (
                 error.code not in _RETRYABLE_HTTP_CODES
-                or attempt == _OPENROUTER_MAX_ATTEMPTS
+                or transient_failures == _OPENROUTER_MAX_ATTEMPTS - 1
             ):
                 raise RuntimeError(
                     f"OpenRouter returned HTTP {error.code}: {details}"
                 ) from error
-            delay = _retry_delay(error, attempt)
+            transient_failures += 1
+            delay = _retry_delay(error, transient_failures)
             print(
                 f"OpenRouter returned HTTP {error.code}; retrying in {delay:g}s "
-                f"({attempt}/{_OPENROUTER_MAX_ATTEMPTS - 1})",
+                f"({transient_failures}/{_OPENROUTER_MAX_ATTEMPTS - 1})",
                 file=sys.stderr,
             )
             time.sleep(delay)

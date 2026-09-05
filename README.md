@@ -23,6 +23,10 @@ visible completion tokens. OpenRouter does not return content logprobs for
 reasoning tokens, so those tokens cannot be used in this comparison.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
+If a provider reports a smaller `top_logprobs` limit than requested, the
+OpenRouter request is retried once using that provider limit. The local model
+still returns the requested `--top-k`; statistics use the ranks available from
+both models.
 
 ## Usage
 

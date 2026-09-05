@@ -235,6 +235,36 @@ class OpenRouterTest(unittest.TestCase):
         urlopen.assert_called_once()
         sleep.assert_not_called()
 
+    def test_adapts_to_provider_top_logprobs_limit(self):
+        invalid_top_k = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            FakeResponse(
+                b'{"error":{"metadata":{"raw":"Range of top_logprobs '
+                b'should be [0, 5]"}}}'
+            ),
+        )
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=[invalid_top_k, self.completion_response()],
+            ) as urlopen,
+            patch("compare_logprobs.time.sleep") as sleep,
+        ):
+            result = query_openrouter(
+                "vendor/model", "The capital is", 20, 1, "test-key"
+            )
+
+        first_body = json.loads(urlopen.call_args_list[0].args[0].data)
+        second_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual(first_body["top_logprobs"], 20)
+        self.assertEqual(second_body["top_logprobs"], 5)
+        sleep.assert_not_called()
+        self.assertEqual(result.generated_text, " Paris")
+
 
 class MainWorkflowTest(unittest.TestCase):
     def test_huggingface_is_teacher_forced_with_openrouter_tokens(self):
