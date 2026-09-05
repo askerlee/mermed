@@ -491,6 +491,88 @@ def query_huggingface(
     reference_prefix = ""
     step_count = len(reference_tokens) if reference_tokens is not None else max_new_tokens
     with torch.inference_mode():
+        if reference_tokens:
+            rendered_prefixes = []
+            for reference_token in reference_tokens:
+                if tokenizer.chat_template:
+                    local_prompt = _render_huggingface_prompt(
+                        tokenizer,
+                        prompt,
+                        reasoning_text,
+                        reference_prefix,
+                    )
+                else:
+                    local_prompt = prompt + _reasoning_prefill(
+                        reasoning_text, reference_prefix
+                    )
+                rendered_prefixes.append(
+                    tokenizer(
+                        local_prompt,
+                        return_tensors="pt",
+                        add_special_tokens=True,
+                    )
+                )
+                reference_prefix += reference_token
+
+            prefix_ids = [encoded["input_ids"][0].tolist() for encoded in rendered_prefixes]
+            longest_ids = prefix_ids[-1]
+            longest_encoded = rendered_prefixes[-1]
+            input_ids = longest_encoded["input_ids"].to(input_device)
+            attention_mask = longest_encoded.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(input_device)
+            longest_outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            incompatible_boundaries = 0
+            for encoded, ids in zip(rendered_prefixes, prefix_ids):
+                if longest_ids[: len(ids)] == ids:
+                    logits = longest_outputs.logits[0, len(ids) - 1]
+                else:
+                    incompatible_boundaries += 1
+                    input_ids = encoded["input_ids"].to(input_device)
+                    attention_mask = encoded.get("attention_mask")
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(input_device)
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                    )
+                    logits = outputs.logits[0, -1]
+                logprobs = torch.log_softmax(logits.float(), dim=-1)
+                count = min(top_k, logprobs.shape[-1])
+                values, token_ids = torch.topk(logprobs, k=count)
+                next_token_id = int(token_ids[0].item())
+                steps.append(
+                    GenerationStep(
+                        generated_token=tokenizer.decode([next_token_id]),
+                        top_tokens=[
+                            TokenLogprob(
+                                token=tokenizer.decode([int(token_id)]),
+                                logprob=float(value),
+                            )
+                            for value, token_id in zip(
+                                values.tolist(), token_ids.tolist()
+                            )
+                        ],
+                    )
+                )
+            if incompatible_boundaries:
+                print(
+                    "Hugging Face tokenizer required separate scoring for "
+                    f"{incompatible_boundaries} unstable token boundaries",
+                    file=sys.stderr,
+                )
+            return ModelResult(
+                provider="huggingface",
+                model=model_name_or_path,
+                generated_text=reference_prefix,
+                steps=steps,
+                teacher_forced=True,
+                reasoning_text=reasoning_text,
+            )
+
         for step_index in range(step_count):
             if tokenizer.chat_template:
                 local_prompt = _render_huggingface_prompt(
@@ -913,6 +995,8 @@ def main() -> int:
             print(f"{'=' * 80}")
 
         try:
+            phase_started = time.monotonic()
+            print(f"Query {idx}: waiting for OpenRouter...", file=sys.stderr)
             openrouter_result = query_openrouter(
                 args.openrouter_model,
                 prompt,
@@ -924,6 +1008,14 @@ def main() -> int:
                 args.max_reasoning_tokens,
                 args.reasoning_effort,
             )
+            print(
+                f"Query {idx}: OpenRouter finished in "
+                f"{time.monotonic() - phase_started:.1f}s; scoring locally "
+                f"with {openrouter_result.reasoning_tokens or 'unknown'} reasoning "
+                "tokens...",
+                file=sys.stderr,
+            )
+            phase_started = time.monotonic()
             huggingface_result = query_huggingface(
                 args.hf_model,
                 prompt,
@@ -934,6 +1026,11 @@ def main() -> int:
                     step.generated_token for step in openrouter_result.steps
                 ],
                 reasoning_text=openrouter_result.reasoning_text,
+            )
+            print(
+                f"Query {idx}: local scoring finished in "
+                f"{time.monotonic() - phase_started:.1f}s",
+                file=sys.stderr,
             )
         except ReasoningBudgetExceeded as error:
             skipped_reasoning_queries += 1

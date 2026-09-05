@@ -23,6 +23,7 @@ from compare_logprobs import (
     parse_args,
     print_comparison,
     print_summary_stats,
+    query_huggingface,
     query_openrouter,
 )
 
@@ -558,6 +559,52 @@ class MainWorkflowTest(unittest.TestCase):
 
 
 class HuggingFacePromptTest(unittest.TestCase):
+    def test_teacher_forcing_uses_one_forward_pass_for_compatible_prefixes(self):
+        import torch
+
+        class FakeTokenizer:
+            chat_template = None
+            eos_token_id = 99
+
+            def __call__(self, text, **kwargs):
+                token_ids = [(ord(character) % 7) + 1 for character in text]
+                return {
+                    "input_ids": torch.tensor([token_ids]),
+                    "attention_mask": torch.ones(1, len(token_ids), dtype=torch.long),
+                }
+
+            def decode(self, token_ids):
+                return f" token-{token_ids[0]}"
+
+        class FakeModel:
+            def __init__(self):
+                self.call_count = 0
+
+            def get_input_embeddings(self):
+                return SimpleNamespace(weight=torch.zeros(1))
+
+            def __call__(self, input_ids, attention_mask):
+                self.call_count += 1
+                logits = torch.zeros(1, input_ids.shape[1], 10)
+                logits[:, :, 3] = 1
+                return SimpleNamespace(logits=logits)
+
+        model = FakeModel()
+        result = query_huggingface(
+            "local/model",
+            "Question",
+            top_k=2,
+            max_new_tokens=3,
+            reference_tokens=[" one", " two", " three"],
+            tokenizer=FakeTokenizer(),
+            model=model,
+            reasoning_text="Long reasoning trace",
+        )
+
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(len(result.steps), 3)
+        self.assertEqual(result.generated_text, " one two three")
+
     def test_uses_structured_reasoning_content_when_template_supports_it(self):
         tokenizer = SimpleNamespace(
             apply_chat_template=lambda messages, **kwargs: (
