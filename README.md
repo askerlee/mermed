@@ -57,7 +57,9 @@ reasoning.
 For teacher-forced comparison, compatible Hugging Face tokenizations are scored
 in one model forward pass, so a long reasoning prefill is not recomputed for
 every visible token. Per-query progress messages report OpenRouter and local
-scoring times separately.
+scoring times separately. After each query's selected token details, a compact
+query summary reports its reasoning tokens and comparison metrics. The complete
+aggregate summary is printed after all queries finish.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the

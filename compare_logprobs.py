@@ -516,6 +516,10 @@ def query_huggingface(
 
             prefix_ids = [encoded["input_ids"][0].tolist() for encoded in rendered_prefixes]
             longest_ids = prefix_ids[-1]
+            print(
+                f"Hugging Face input: {len(longest_ids)} tokens on {input_device}",
+                file=sys.stderr,
+            )
             longest_encoded = rendered_prefixes[-1]
             input_ids = longest_encoded["input_ids"].to(input_device)
             attention_mask = longest_encoded.get("attention_mask")
@@ -767,6 +771,27 @@ def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
     print(f"Average HF top-1 logprob:        {stats.avg_hf_top1_logprob:>8.4f}")
 
 
+def print_query_summary(stats: SummaryStats, top_k: int) -> None:
+    reasoning_tokens = (
+        f"{stats.avg_reasoning_tokens:.0f}"
+        if stats.avg_reasoning_tokens is not None
+        else "N/A"
+    )
+    match_count = int(round(stats.top1_match_rate * stats.total_steps))
+    print("\n--- Query summary ---")
+    print(f"Reasoning tokens:                {reasoning_tokens}")
+    print(f"Visible generation steps:        {stats.total_steps}")
+    print(
+        f"Top-1 matches:                   {match_count}/{stats.total_steps} "
+        f"({stats.top1_match_rate:.2%})"
+    )
+    print(
+        f"Average top-{top_k} token overlap:     {stats.avg_overlap_count:.2f} "
+        f"({stats.avg_overlap_ratio:.2%} of available ranks)"
+    )
+    print(f"Average top-1 prob diff:         {stats.avg_prob_diff:.4f}")
+
+
 def print_comparison(left: ModelResult, right: ModelResult) -> None:
     print(f"OpenRouter:   {left.model}")
     print(f"Hugging Face: {right.model}")
@@ -1008,10 +1033,16 @@ def main() -> int:
                 args.max_reasoning_tokens,
                 args.reasoning_effort,
             )
+            local_model_cached = (args.hf_model, args.device) in _HF_MODEL_CACHE
+            local_phase = (
+                "local scoring"
+                if local_model_cached
+                else "Hugging Face model loading and local scoring"
+            )
             print(
                 f"Query {idx}: OpenRouter finished in "
-                f"{time.monotonic() - phase_started:.1f}s; scoring locally "
-                f"with {openrouter_result.reasoning_tokens or 'unknown'} reasoning "
+                f"{time.monotonic() - phase_started:.1f}s; {local_phase} with "
+                f"{openrouter_result.reasoning_tokens or 'unknown'} reasoning "
                 "tokens...",
                 file=sys.stderr,
             )
@@ -1028,7 +1059,7 @@ def main() -> int:
                 reasoning_text=openrouter_result.reasoning_text,
             )
             print(
-                f"Query {idx}: local scoring finished in "
+                f"Query {idx}: {local_phase} finished in "
                 f"{time.monotonic() - phase_started:.1f}s",
                 file=sys.stderr,
             )
@@ -1052,6 +1083,13 @@ def main() -> int:
             )
             query_steps.append(s_stat)
             all_step_stats.append(s_stat)
+
+        query_summary = compute_summary_stats(
+            query_steps,
+            total_queries=1,
+            reasoning_token_counts=[openrouter_result.reasoning_tokens],
+        )
+        print_query_summary(query_summary, args.top_k)
 
         comparisons.append(
             QueryComparison(

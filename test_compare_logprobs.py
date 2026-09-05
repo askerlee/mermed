@@ -22,6 +22,7 @@ from compare_logprobs import (
     main,
     parse_args,
     print_comparison,
+    print_query_summary,
     print_summary_stats,
     query_huggingface,
     query_openrouter,
@@ -528,6 +529,7 @@ class MainWorkflowTest(unittest.TestCase):
             device="cpu",
             json_output=None,
         )
+        stdout = io.StringIO()
 
         with (
             patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
@@ -540,7 +542,7 @@ class MainWorkflowTest(unittest.TestCase):
                 "compare_logprobs.query_huggingface",
                 return_value=huggingface_result,
             ) as query_huggingface,
-            redirect_stdout(io.StringIO()),
+            redirect_stdout(stdout),
         ):
             exit_code = main()
 
@@ -555,6 +557,15 @@ class MainWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(
             query_huggingface.call_args.kwargs["reasoning_text"], "Think first"
+        )
+        rendered = stdout.getvalue()
+        self.assertLess(
+            rendered.index("=== Generation step 1 ==="),
+            rendered.index("--- Query summary ---"),
+        )
+        self.assertLess(
+            rendered.index("--- Query summary ---"),
+            rendered.index("AVERAGE STATS SUMMARY"),
         )
 
 
@@ -874,6 +885,14 @@ class StatsComputationTest(unittest.TestCase):
         self.assertIn("Top-k used:                      5", output.getvalue())
         self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
         self.assertIn("Queries skipped (long reasoning):       3", output.getvalue())
+
+        query_output = io.StringIO()
+        with redirect_stdout(query_output):
+            print_query_summary(summary, top_k=5)
+        self.assertIn("--- Query summary ---", query_output.getvalue())
+        self.assertIn("Reasoning tokens:                200", query_output.getvalue())
+        self.assertIn("Visible generation steps:        2", query_output.getvalue())
+        self.assertIn("Top-1 matches:                   1/2 (50.00%)", query_output.getvalue())
 
 
 class ArgParseTest(unittest.TestCase):
