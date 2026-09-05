@@ -15,6 +15,7 @@ from compare_logprobs import (
     StepStats,
     TokenLogprob,
     _huggingface_placement,
+    _render_huggingface_prompt,
     compute_step_stats,
     compute_summary_stats,
     main,
@@ -119,7 +120,7 @@ class OpenRouterTest(unittest.TestCase):
         request_body = json.loads(request.data)
         self.assertTrue(request_body["logprobs"])
         self.assertEqual(request_body["top_logprobs"], 2)
-        self.assertEqual(request_body["reasoning"], {"effort": "none"})
+        self.assertNotIn("reasoning", request_body)
         self.assertEqual(
             request_body["provider"],
             {"require_parameters": True, "only": ["fireworks"]},
@@ -130,6 +131,35 @@ class OpenRouterTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.steps[0].top_tokens[0].probability, 0.904837, places=6
         )
+
+    def test_preserves_reasoning_while_normalizing_content_logprobs(self):
+        response = {
+            "choices": [
+                {
+                    "message": {"content": " Answer", "reasoning": "Work it out"},
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": " Answer",
+                                "logprob": -0.1,
+                                "top_logprobs": [
+                                    {"token": " Answer", "logprob": -0.1}
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=FakeResponse(json.dumps(response).encode()),
+        ):
+            result = query_openrouter("vendor/model", "Question", 1, 10, "test-key")
+
+        self.assertEqual(result.reasoning_text, "Work it out")
+        self.assertEqual([step.generated_token for step in result.steps], [" Answer"])
 
     def test_rejects_response_without_ranked_tokens(self):
         response = {
@@ -190,7 +220,7 @@ class OpenRouterTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 RuntimeError,
-                "Example Provider.*reasoning but no output tokens",
+                "Example Provider.*reasoning but no visible output tokens.*max-new-tokens",
             ):
                 query_openrouter("vendor/model", "The capital is", 2, 1, "test-key")
 
@@ -276,7 +306,11 @@ class MainWorkflowTest(unittest.TestCase):
             GenerationStep(" second", [TokenLogprob(" second", -0.2)]),
         ]
         openrouter_result = ModelResult(
-            "openrouter", "remote/model", " first second", reference_steps
+            "openrouter",
+            "remote/model",
+            " first second",
+            reference_steps,
+            reasoning_text="Think first",
         )
         huggingface_result = ModelResult(
             "huggingface",
@@ -316,6 +350,45 @@ class MainWorkflowTest(unittest.TestCase):
         self.assertEqual(
             query_huggingface.call_args.kwargs["reference_tokens"],
             [" first", " second"],
+        )
+        self.assertEqual(
+            query_huggingface.call_args.kwargs["reasoning_text"], "Think first"
+        )
+
+
+class HuggingFacePromptTest(unittest.TestCase):
+    def test_uses_structured_reasoning_content_when_template_supports_it(self):
+        tokenizer = SimpleNamespace(
+            apply_chat_template=lambda messages, **kwargs: (
+                f"USER:{messages[0]['content']}\n"
+                f"THINK:{messages[1]['reasoning_content']}\n"
+                f"ANSWER:{messages[1]['content']}"
+            )
+        )
+
+        rendered = _render_huggingface_prompt(
+            tokenizer, "Question", "Reasoning trace", " visible"
+        )
+
+        self.assertEqual(
+            rendered,
+            "USER:Question\nTHINK:Reasoning trace\nANSWER: visible",
+        )
+
+    def test_falls_back_to_think_tags_when_template_ignores_reasoning(self):
+        tokenizer = SimpleNamespace(
+            apply_chat_template=lambda messages, **kwargs: (
+                f"USER:{messages[0]['content']}\nANSWER:{messages[-1]['content']}"
+            )
+        )
+
+        rendered = _render_huggingface_prompt(
+            tokenizer, "Question", "Reasoning trace", " visible"
+        )
+
+        self.assertEqual(
+            rendered,
+            "USER:Question\nANSWER:<think>\nReasoning trace\n</think>\n\n visible",
         )
 
     def test_loops_over_example_queries_when_prompt_is_none(self):

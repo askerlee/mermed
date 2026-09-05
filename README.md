@@ -18,9 +18,13 @@ silently ignore `logprobs`; if no compatible route exists, choose another
 model. Models on the Hugging Face Hub are downloaded on first use; `--hf-model`
 can instead point to a local model directory.
 
-The OpenRouter request disables reasoning so `--max-new-tokens` is spent on
-visible completion tokens. OpenRouter does not return content logprobs for
-reasoning tokens, so those tokens cannot be used in this comparison.
+OpenRouter reasoning is allowed when the model requires or chooses it. The
+reasoning trace is retained but excluded from similarity statistics because
+OpenRouter supplies `logprobs.content` only for visible completion tokens. The
+local model is prefixed with the same reasoning trace before it is
+teacher-forced along those visible tokens. Models whose chat templates support
+`reasoning_content` receive it structurally; other templates use
+`<think>...</think>` markers as a fallback.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the

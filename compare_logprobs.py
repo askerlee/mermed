@@ -65,6 +65,7 @@ class ModelResult:
     generated_text: str
     steps: list[GenerationStep]
     teacher_forced: bool = False
+    reasoning_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,72 @@ def _openrouter_request(payload: dict[str, Any], api_key: str) -> urllib.request
     )
 
 
+def _reasoning_text(message: dict[str, Any]) -> str:
+    reasoning = message.get("reasoning")
+    if isinstance(reasoning, str):
+        return reasoning
+    details = message.get("reasoning_details") or []
+    parts = []
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        text = detail.get("text") or detail.get("summary")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _reasoning_prefill(reasoning_text: str, visible_prefix: str) -> str:
+    reasoning_text = reasoning_text.strip()
+    if not reasoning_text:
+        return visible_prefix
+    if reasoning_text.startswith("<think>"):
+        return reasoning_text + visible_prefix
+    return f"<think>\n{reasoning_text}\n</think>\n\n{visible_prefix}"
+
+
+def _render_huggingface_prompt(
+    tokenizer: Any,
+    prompt: str,
+    reasoning_text: str,
+    visible_prefix: str,
+) -> str:
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    if not reasoning_text and not visible_prefix:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    sentinel = "<|mermed_prefill_end|>"
+    assistant: dict[str, Any] = {
+        "role": "assistant",
+        "content": visible_prefix + sentinel,
+    }
+    if reasoning_text:
+        assistant["reasoning_content"] = reasoning_text
+    messages.append(assistant)
+    rendered = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        continue_final_message=True,
+    )
+    if reasoning_text and reasoning_text not in rendered:
+        messages[-1] = {
+            "role": "assistant",
+            "content": _reasoning_prefill(reasoning_text, visible_prefix) + sentinel,
+        }
+        rendered = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            continue_final_message=True,
+        )
+    if not rendered.endswith(sentinel):
+        raise RuntimeError("The Hugging Face chat template could not preserve prefill text")
+    return rendered[: -len(sentinel)]
+
+
 def load_huggingface_model(
     model_name_or_path: str,
     device: str | None = None,
@@ -212,7 +279,6 @@ def query_openrouter(
         "temperature": 0,
         "logprobs": True,
         "top_logprobs": top_k,
-        "reasoning": {"effort": "none"},
         "provider": provider_preferences,
     }
     request = _openrouter_request(payload, api_key)
@@ -270,14 +336,20 @@ def query_openrouter(
         provider = body.get("provider", "unknown provider")
         message = choice.get("message") or {}
         reasoning_only = message.get("reasoning") and not message.get("content")
-        detail = " The response contained reasoning but no output tokens." if reasoning_only else ""
+        if reasoning_only:
+            detail = (
+                " The response contained reasoning but no visible output tokens; "
+                "increase --max-new-tokens."
+            )
+        else:
+            detail = " Choose a model with a logprob-capable provider."
         raise RuntimeError(
-            f"OpenRouter provider {provider!r} did not return token logprobs.{detail} "
-            "Choose a model with a logprob-capable provider."
+            f"OpenRouter provider {provider!r} did not return token logprobs.{detail}"
         )
     try:
         content_logprobs = choice["logprobs"]["content"]
-        generated_text = choice["message"]["content"] or ""
+        message = choice["message"]
+        generated_text = message["content"] or ""
     except (KeyError, TypeError) as error:
         raise RuntimeError(
             f"OpenRouter returned malformed token logprobs: {choice.get('logprobs')}"
@@ -308,6 +380,7 @@ def query_openrouter(
         model=model,
         generated_text=generated_text,
         steps=steps,
+        reasoning_text=_reasoning_text(message),
     )
 
 
@@ -320,6 +393,7 @@ def query_huggingface(
     reference_tokens: list[str] | None = None,
     tokenizer: Any = None,
     model: Any = None,
+    reasoning_text: str = "",
 ) -> ModelResult:
     try:
         import torch
@@ -346,24 +420,16 @@ def query_huggingface(
     with torch.inference_mode():
         for step_index in range(step_count):
             if tokenizer.chat_template:
-                messages = [{"role": "user", "content": prompt}]
-                if reference_prefix:
-                    messages.append(
-                        {"role": "assistant", "content": reference_prefix}
-                    )
-                    local_prompt = tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        continue_final_message=True,
-                    )
-                else:
-                    local_prompt = tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
+                local_prompt = _render_huggingface_prompt(
+                    tokenizer,
+                    prompt,
+                    reasoning_text,
+                    reference_prefix,
+                )
             else:
-                local_prompt = prompt + reference_prefix
+                local_prompt = prompt + _reasoning_prefill(
+                    reasoning_text, reference_prefix
+                )
 
             encoded = tokenizer(
                 local_prompt, return_tensors="pt", add_special_tokens=True
@@ -413,6 +479,7 @@ def query_huggingface(
         ),
         steps=steps,
         teacher_forced=reference_tokens is not None,
+        reasoning_text=reasoning_text,
     )
 
 
@@ -686,6 +753,7 @@ def main() -> int:
                 reference_tokens=[
                     step.generated_token for step in openrouter_result.steps
                 ],
+                reasoning_text=openrouter_result.reasoning_text,
             )
         except RuntimeError as error:
             print(f"error: {error}", file=sys.stderr)
