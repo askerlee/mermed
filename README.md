@@ -32,7 +32,7 @@ continues until visible output appears or `--max-openrouter-tokens` is reached
 (default: 16384). These are new billable requests, not continuations of the
 same generation, so lower the hard cap when controlling cost is more important.
 
-By default, the script requests `--reasoning-effort low` and reserves 1000
+By default, the script requests `--reasoning-effort minimal` and reserves 1000
 tokens for reasoning in addition to `--max-new-tokens`. Thus the default sends
 one fixed 1100-token OpenRouter request while comparing at most 100 visible
 tokens. Automatic budget growth remains disabled. Supported effort values are
@@ -72,7 +72,7 @@ python compare_logprobs.py \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
   --max-new-tokens 100 \
-  --reasoning-effort low \
+  --reasoning-effort minimal \
   --max-openrouter-tokens 16384 \
   --json-output comparison.json
 

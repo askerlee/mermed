@@ -789,7 +789,7 @@ class ArgParseTest(unittest.TestCase):
             self.assertEqual(args.openrouter_provider, "fireworks")
             self.assertEqual(args.max_openrouter_tokens, 16384)
             self.assertIsNone(args.max_reasoning_tokens)
-            self.assertEqual(args.reasoning_effort, "low")
+            self.assertEqual(args.reasoning_effort, "minimal")
 
     def test_numeric_reasoning_cap_disables_default_effort(self):
         with patch(

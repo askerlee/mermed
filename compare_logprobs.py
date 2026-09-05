@@ -819,7 +819,7 @@ def parse_args() -> argparse.Namespace:
     reasoning_group.add_argument(
         "--reasoning-effort",
         choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
-        help="OpenRouter reasoning effort (default: low)",
+        help="OpenRouter reasoning effort (default: minimal)",
     )
     parser.add_argument(
         "--max-openrouter-tokens",
@@ -841,7 +841,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     if args.max_reasoning_tokens is None and args.reasoning_effort is None:
-        args.reasoning_effort = "low"
+        args.reasoning_effort = "minimal"
 
     if not 1 <= args.top_k <= 20:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
