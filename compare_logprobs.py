@@ -272,6 +272,7 @@ def query_openrouter(
     provider: str | None = None,
     max_openrouter_tokens: int | None = None,
     max_reasoning_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> ModelResult:
     initial_token_budget = max_new_tokens + (max_reasoning_tokens or 0)
     token_ceiling = max_openrouter_tokens or initial_token_budget
@@ -294,6 +295,8 @@ def query_openrouter(
     }
     if max_reasoning_tokens is not None:
         payload["reasoning"] = {"max_tokens": max_reasoning_tokens}
+    elif reasoning_effort is not None:
+        payload["reasoning"] = {"effort": reasoning_effort}
     request = _openrouter_request(payload, api_key)
 
     transient_failures = 0
@@ -314,6 +317,7 @@ def query_openrouter(
                 reasoning_only
                 and choice.get("finish_reason") == "length"
                 and max_reasoning_tokens is None
+                and reasoning_effort is None
                 and payload["max_tokens"] < token_ceiling
             ):
                 next_budget = min(payload["max_tokens"] * 2, token_ceiling)
@@ -375,11 +379,16 @@ def query_openrouter(
         message = choice.get("message") or {}
         reasoning_only = message.get("reasoning") and not message.get("content")
         if reasoning_only:
-            if max_reasoning_tokens is not None:
+            if max_reasoning_tokens is not None or reasoning_effort is not None:
+                reasoning_control = (
+                    f"the requested {max_reasoning_tokens}-token reasoning cap"
+                    if max_reasoning_tokens is not None
+                    else f"reasoning effort {reasoning_effort!r}"
+                )
                 detail = (
                     " The response contained reasoning but no visible output tokens. "
-                    f"The provider did not finish reasoning within the requested "
-                    f"{max_reasoning_tokens}-token reasoning cap; the fixed "
+                    f"The provider did not finish reasoning with {reasoning_control}; "
+                    f"the fixed "
                     f"{initial_token_budget}-token request was not retried."
                 )
             else:
@@ -792,14 +801,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-model", required=True, help="Hub model ID or local path")
     parser.add_argument("-k", "--top-k", type=int, default=20)
     parser.add_argument("--max-new-tokens", type=int, default=100)
-    parser.add_argument(
+    reasoning_group = parser.add_mutually_exclusive_group()
+    reasoning_group.add_argument(
         "--max-reasoning-tokens",
         type=int,
-        default=1000,
         help=(
             "Cap OpenRouter reasoning tokens before generation; support varies "
             "by model and provider"
         ),
+    )
+    reasoning_group.add_argument(
+        "--reasoning-effort",
+        choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+        help="OpenRouter reasoning effort (default: low)",
     )
     parser.add_argument(
         "--max-openrouter-tokens",
@@ -819,6 +833,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--json-output", type=Path)
     args = parser.parse_args()
+
+    if args.max_reasoning_tokens is None and args.reasoning_effort is None:
+        args.reasoning_effort = "low"
 
     if not 1 <= args.top_k <= 20:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
@@ -865,6 +882,7 @@ def main() -> int:
                 args.openrouter_provider,
                 args.max_openrouter_tokens,
                 args.max_reasoning_tokens,
+                args.reasoning_effort,
             )
             huggingface_result = query_huggingface(
                 args.hf_model,

@@ -32,7 +32,13 @@ continues until visible output appears or `--max-openrouter-tokens` is reached
 (default: 16384). These are new billable requests, not continuations of the
 same generation, so lower the hard cap when controlling cost is more important.
 
-Use `--max-reasoning-tokens` to request a reasoning cap before generation. The
+By default, the script requests `--reasoning-effort low`. This keeps the
+OpenRouter request at `--max-new-tokens` and disables automatic budget growth.
+Supported effort values are `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`; providers map unsupported levels to their nearest option.
+
+Alternatively, use `--max-reasoning-tokens` to request a numeric reasoning cap.
+The two reasoning controls are mutually exclusive. The
 script reserves `--max-new-tokens` in addition to that cap for visible output,
 so `--max-reasoning-tokens 1000 --max-new-tokens 100` sends a total completion
 budget of 1100. Exact token caps are supported by Anthropic, Gemini thinking,
@@ -42,10 +48,10 @@ approximate effort level. The combined budget must not exceed
 uses less than its reasoning allowance, only the first `--max-new-tokens` are
 teacher-forced, compared, printed, and saved.
 
-When `--max-reasoning-tokens` is set, the request uses that fixed combined
-budget and automatic budget growth is disabled. If the selected provider does
-not honor the reasoning cap and returns no visible tokens, the script stops
-with an error instead of retrying with a larger, separately billed request.
+When either reasoning control is set, the request uses a fixed budget and
+automatic budget growth is disabled. If the selected provider returns no
+visible tokens, the script stops with an error instead of retrying with a
+larger, separately billed request.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the
@@ -64,7 +70,7 @@ python compare_logprobs.py \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
   --max-new-tokens 100 \
-  --max-reasoning-tokens 1000 \
+  --reasoning-effort low \
   --max-openrouter-tokens 16384 \
   --json-output comparison.json
 

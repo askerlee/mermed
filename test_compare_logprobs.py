@@ -186,6 +186,25 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(request_body["max_tokens"], 1100)
         self.assertEqual(request_body["reasoning"], {"max_tokens": 1000})
 
+    def test_uses_low_reasoning_effort_without_expanding_token_budget(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self.completion_response(),
+        ) as urlopen:
+            query_openrouter(
+                "vendor/model",
+                "Question",
+                1,
+                100,
+                "test-key",
+                max_openrouter_tokens=16384,
+                reasoning_effort="low",
+            )
+
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["max_tokens"], 100)
+        self.assertEqual(request_body["reasoning"], {"effort": "low"})
+
     def test_caps_visible_tokens_used_for_comparison(self):
         content = [
             {
@@ -452,6 +471,7 @@ class MainWorkflowTest(unittest.TestCase):
             max_new_tokens=2,
             max_openrouter_tokens=1000,
             max_reasoning_tokens=100,
+            reasoning_effort=None,
             device="cpu",
             json_output=None,
         )
@@ -475,6 +495,7 @@ class MainWorkflowTest(unittest.TestCase):
         self.assertEqual(query_openrouter.call_args.args[5], "fireworks")
         self.assertEqual(query_openrouter.call_args.args[6], 1000)
         self.assertEqual(query_openrouter.call_args.args[7], 100)
+        self.assertIsNone(query_openrouter.call_args.args[8])
         self.assertEqual(
             query_huggingface.call_args.kwargs["reference_tokens"],
             [" first", " second"],
@@ -572,6 +593,7 @@ class ComparisonOutputTest(unittest.TestCase):
             max_new_tokens=1,
             max_openrouter_tokens=1000,
             max_reasoning_tokens=None,
+            reasoning_effort="low",
             device="cpu",
             json_output=None,
         )
@@ -715,7 +737,26 @@ class ArgParseTest(unittest.TestCase):
             self.assertEqual(args.openrouter_model, "remote/model")
             self.assertEqual(args.openrouter_provider, "fireworks")
             self.assertEqual(args.max_openrouter_tokens, 16384)
-            self.assertEqual(args.max_reasoning_tokens, 1000)
+            self.assertIsNone(args.max_reasoning_tokens)
+            self.assertEqual(args.reasoning_effort, "low")
+
+    def test_numeric_reasoning_cap_disables_default_effort(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+                "--max-reasoning-tokens",
+                "1000",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.max_reasoning_tokens, 1000)
+        self.assertIsNone(args.reasoning_effort)
 
     def test_reasoning_cap_must_fit_with_visible_budget(self):
         with patch(
