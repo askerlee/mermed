@@ -19,8 +19,17 @@ point to a local model directory.
 ## Usage
 
 ```bash
+# Compare a single prompt:
 python compare_logprobs.py \
   "The capital of France is" \
+  --openrouter-model openai/gpt-4.1-mini \
+  --hf-model Qwen/Qwen2.5-1.5B-Instruct \
+  --top-k 20 \
+  --max-new-tokens 3 \
+  --json-output comparison.json
+
+# If prompt is omitted, it evaluates all EXAMPLE_QUERIES and computes average stats:
+python compare_logprobs.py \
   --openrouter-model openai/gpt-4.1-mini \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
