@@ -186,7 +186,7 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(request_body["max_tokens"], 1100)
         self.assertEqual(request_body["reasoning"], {"max_tokens": 1000})
 
-    def test_uses_low_reasoning_effort_without_expanding_token_budget(self):
+    def test_uses_low_reasoning_effort_with_fixed_reasoning_allowance(self):
         with patch(
             "urllib.request.urlopen",
             return_value=self.completion_response(),
@@ -202,8 +202,59 @@ class OpenRouterTest(unittest.TestCase):
             )
 
         request_body = json.loads(urlopen.call_args.args[0].data)
-        self.assertEqual(request_body["max_tokens"], 100)
+        self.assertEqual(request_body["max_tokens"], 1100)
         self.assertEqual(request_body["reasoning"], {"effort": "low"})
+
+    def test_none_reasoning_effort_does_not_reserve_reasoning_tokens(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self.completion_response(),
+        ) as urlopen:
+            query_openrouter(
+                "vendor/model",
+                "Question",
+                1,
+                100,
+                "test-key",
+                max_openrouter_tokens=100,
+                reasoning_effort="none",
+            )
+
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["max_tokens"], 100)
+        self.assertEqual(request_body["reasoning"], {"effort": "none"})
+
+    def test_does_not_grow_budget_with_reasoning_effort(self):
+        reasoning_only = {
+            "provider": "Example Provider",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": None, "reasoning": "Still thinking"},
+                    "logprobs": None,
+                }
+            ],
+        }
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=FakeResponse(json.dumps(reasoning_only).encode()),
+        ) as urlopen:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "reasoning effort 'low'.*fixed 1100-token request was not retried",
+            ):
+                query_openrouter(
+                    "vendor/model",
+                    "Question",
+                    1,
+                    100,
+                    "test-key",
+                    max_openrouter_tokens=16384,
+                    reasoning_effort="low",
+                )
+
+        urlopen.assert_called_once()
 
     def test_caps_visible_tokens_used_for_comparison(self):
         content = [

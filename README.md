@@ -32,10 +32,12 @@ continues until visible output appears or `--max-openrouter-tokens` is reached
 (default: 16384). These are new billable requests, not continuations of the
 same generation, so lower the hard cap when controlling cost is more important.
 
-By default, the script requests `--reasoning-effort low`. This keeps the
-OpenRouter request at `--max-new-tokens` and disables automatic budget growth.
-Supported effort values are `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`; providers map unsupported levels to their nearest option.
+By default, the script requests `--reasoning-effort low` and reserves 1000
+tokens for reasoning in addition to `--max-new-tokens`. Thus the default sends
+one fixed 1100-token OpenRouter request while comparing at most 100 visible
+tokens. Automatic budget growth remains disabled. Supported effort values are
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; providers map
+unsupported levels to their nearest option.
 
 Alternatively, use `--max-reasoning-tokens` to request a numeric reasoning cap.
 The two reasoning controls are mutually exclusive. The

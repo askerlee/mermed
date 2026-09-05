@@ -109,6 +109,7 @@ class SummaryStats:
 
 _HF_MODEL_CACHE: dict[tuple[str, str | None], tuple[Any, Any]] = {}
 _OPENROUTER_MAX_ATTEMPTS = 4
+_REASONING_EFFORT_TOKEN_ALLOWANCE = 1000
 _RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504, 529}
 
 
@@ -274,7 +275,12 @@ def query_openrouter(
     max_reasoning_tokens: int | None = None,
     reasoning_effort: str | None = None,
 ) -> ModelResult:
-    initial_token_budget = max_new_tokens + (max_reasoning_tokens or 0)
+    reasoning_allowance = max_reasoning_tokens or (
+        _REASONING_EFFORT_TOKEN_ALLOWANCE
+        if reasoning_effort not in (None, "none")
+        else 0
+    )
+    initial_token_budget = max_new_tokens + reasoning_allowance
     token_ceiling = max_openrouter_tokens or initial_token_budget
     if initial_token_budget > token_ceiling:
         raise RuntimeError(
@@ -844,12 +850,17 @@ def parse_args() -> argparse.Namespace:
     if args.max_reasoning_tokens is not None and args.max_reasoning_tokens < 1:
         parser.error("--max-reasoning-tokens must be at least 1")
     initial_openrouter_tokens = args.max_new_tokens + (
-        args.max_reasoning_tokens or 0
+        args.max_reasoning_tokens
+        or (
+            _REASONING_EFFORT_TOKEN_ALLOWANCE
+            if args.reasoning_effort not in (None, "none")
+            else 0
+        )
     )
     if args.max_openrouter_tokens < initial_openrouter_tokens:
         parser.error(
-            "--max-openrouter-tokens must be at least --max-new-tokens plus "
-            "--max-reasoning-tokens"
+            "--max-openrouter-tokens must cover the visible-token budget plus "
+            "the reasoning allowance"
         )
     return args
 
