@@ -35,6 +35,7 @@ both models.
 python compare_logprobs.py \
   "The capital of France is" \
   --openrouter-model openai/gpt-4.1-mini \
+  --openrouter-provider fireworks \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
   --max-new-tokens 3 \
@@ -48,6 +49,11 @@ python compare_logprobs.py \
   --max-new-tokens 3 \
   --json-output comparison.json
 ```
+
+Use `--openrouter-provider` to restrict routing to one provider, for example
+`fireworks`, `morph`, or `digitalocean`. The provider must offer the selected
+model and support every requested parameter. Omit the option to let OpenRouter
+choose among compatible providers.
 
 By default, the local model is sharded across all visible CUDA GPUs when more
 than one is available. This uses Hugging Face Accelerate's `device_map="auto"`.

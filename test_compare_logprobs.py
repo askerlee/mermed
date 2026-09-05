@@ -112,7 +112,7 @@ class OpenRouterTest(unittest.TestCase):
 
         with patch("urllib.request.urlopen", return_value=fake_response) as urlopen:
             result = query_openrouter(
-                "vendor/model", "The capital is", 2, 1, "test-key"
+                "vendor/model", "The capital is", 2, 1, "test-key", "fireworks"
             )
 
         request = urlopen.call_args.args[0]
@@ -120,7 +120,10 @@ class OpenRouterTest(unittest.TestCase):
         self.assertTrue(request_body["logprobs"])
         self.assertEqual(request_body["top_logprobs"], 2)
         self.assertEqual(request_body["reasoning"], {"effort": "none"})
-        self.assertEqual(request_body["provider"], {"require_parameters": True})
+        self.assertEqual(
+            request_body["provider"],
+            {"require_parameters": True, "only": ["fireworks"]},
+        )
         self.assertEqual(result.generated_text, " Paris")
         self.assertEqual(result.steps[0].generated_token, " Paris")
         self.assertEqual(result.steps[0].top_tokens[1].token, " Lyon")
@@ -285,6 +288,7 @@ class MainWorkflowTest(unittest.TestCase):
         args = Namespace(
             prompt="prompt",
             openrouter_model="remote/model",
+            openrouter_provider="fireworks",
             hf_model="local/model",
             top_k=20,
             max_new_tokens=2,
@@ -298,7 +302,7 @@ class MainWorkflowTest(unittest.TestCase):
             patch(
                 "compare_logprobs.query_openrouter",
                 return_value=openrouter_result,
-            ),
+            ) as query_openrouter,
             patch(
                 "compare_logprobs.query_huggingface",
                 return_value=huggingface_result,
@@ -308,6 +312,7 @@ class MainWorkflowTest(unittest.TestCase):
             exit_code = main()
 
         self.assertEqual(exit_code, 0)
+        self.assertEqual(query_openrouter.call_args.args[5], "fireworks")
         self.assertEqual(
             query_huggingface.call_args.kwargs["reference_tokens"],
             [" first", " second"],
@@ -330,6 +335,7 @@ class MainWorkflowTest(unittest.TestCase):
         args = Namespace(
             prompt=None,
             openrouter_model="remote/model",
+            openrouter_provider=None,
             hf_model="local/model",
             top_k=20,
             max_new_tokens=1,
@@ -454,6 +460,8 @@ class ArgParseTest(unittest.TestCase):
                 "compare_logprobs.py",
                 "--openrouter-model",
                 "remote/model",
+                "--openrouter-provider",
+                "fireworks",
                 "--hf-model",
                 "local/model",
             ],
@@ -461,6 +469,7 @@ class ArgParseTest(unittest.TestCase):
             args = parse_args()
             self.assertIsNone(args.prompt)
             self.assertEqual(args.openrouter_model, "remote/model")
+            self.assertEqual(args.openrouter_provider, "fireworks")
 
     def test_prompt_provided(self):
         with patch(

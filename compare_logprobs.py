@@ -200,7 +200,11 @@ def query_openrouter(
     top_k: int,
     max_new_tokens: int,
     api_key: str,
+    provider: str | None = None,
 ) -> ModelResult:
+    provider_preferences: dict[str, Any] = {"require_parameters": True}
+    if provider:
+        provider_preferences["only"] = [provider]
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -209,7 +213,7 @@ def query_openrouter(
         "logprobs": True,
         "top_logprobs": top_k,
         "reasoning": {"effort": "none"},
-        "provider": {"require_parameters": True},
+        "provider": provider_preferences,
     }
     request = _openrouter_request(payload, api_key)
 
@@ -622,6 +626,10 @@ def parse_args() -> argparse.Namespace:
         help="Prompt supplied to both models (if omitted, loops over EXAMPLE_QUERIES)",
     )
     parser.add_argument("--openrouter-model", required=True)
+    parser.add_argument(
+        "--openrouter-provider",
+        help="OpenRouter provider slug to use exclusively, such as fireworks",
+    )
     parser.add_argument("--hf-model", required=True, help="Hub model ID or local path")
     parser.add_argument("-k", "--top-k", type=int, default=20)
     parser.add_argument("--max-new-tokens", type=int, default=100)
@@ -667,6 +675,7 @@ def main() -> int:
                 args.top_k,
                 args.max_new_tokens,
                 api_key,
+                args.openrouter_provider,
             )
             huggingface_result = query_huggingface(
                 args.hf_model,
