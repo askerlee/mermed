@@ -21,6 +21,7 @@ from compare_logprobs import (
     main,
     parse_args,
     print_comparison,
+    print_summary_stats,
     query_openrouter,
 )
 
@@ -135,6 +136,9 @@ class OpenRouterTest(unittest.TestCase):
 
     def test_preserves_reasoning_while_normalizing_content_logprobs(self):
         response = {
+            "usage": {
+                "completion_tokens_details": {"reasoning_tokens": 37}
+            },
             "choices": [
                 {
                     "message": {"content": " Answer", "reasoning": "Work it out"},
@@ -160,6 +164,7 @@ class OpenRouterTest(unittest.TestCase):
             result = query_openrouter("vendor/model", "Question", 1, 10, "test-key")
 
         self.assertEqual(result.reasoning_text, "Work it out")
+        self.assertEqual(result.reasoning_tokens, 37)
         self.assertEqual([step.generated_token for step in result.steps], [" Answer"])
 
     def test_caps_reasoning_and_reserves_visible_token_budget(self):
@@ -308,6 +313,40 @@ class OpenRouterTest(unittest.TestCase):
         ]
         self.assertEqual(budgets, [100, 200])
         self.assertEqual(result.generated_text, " Paris")
+
+    def test_does_not_grow_budget_with_explicit_reasoning_cap(self):
+        reasoning_only = {
+            "provider": "Example Provider",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": None, "reasoning": "Still thinking"},
+                    "logprobs": None,
+                }
+            ],
+        }
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=FakeResponse(json.dumps(reasoning_only).encode()),
+        ) as urlopen:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "did not finish reasoning.*fixed 1100-token request was not retried",
+            ):
+                query_openrouter(
+                    "vendor/model",
+                    "Question",
+                    1,
+                    100,
+                    "test-key",
+                    max_openrouter_tokens=16384,
+                    max_reasoning_tokens=1000,
+                )
+
+        urlopen.assert_called_once()
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["max_tokens"], 1100)
 
     def test_retries_rate_limit_using_retry_after(self):
         rate_limit = urllib.error.HTTPError(
@@ -635,15 +674,26 @@ class StatsComputationTest(unittest.TestCase):
             hf_top1_logprob=-0.693,
             prob_diff=0.1,
         )
-        summary = compute_summary_stats([s1, s2], total_queries=2)
+        summary = compute_summary_stats(
+            [s1, s2],
+            total_queries=2,
+            reasoning_token_counts=[100, 300],
+        )
         self.assertEqual(summary.total_queries, 2)
         self.assertEqual(summary.total_steps, 2)
+        self.assertEqual(summary.avg_reasoning_tokens, 200)
         self.assertAlmostEqual(summary.top1_match_rate, 0.5)
         self.assertAlmostEqual(summary.avg_overlap_count, 2.0)
         self.assertAlmostEqual(summary.avg_overlap_ratio, 0.5)
         self.assertAlmostEqual(summary.avg_openrouter_top1_prob, 0.7)
         self.assertAlmostEqual(summary.avg_hf_top1_prob, 0.6)
         self.assertAlmostEqual(summary.avg_prob_diff, 0.1)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            print_summary_stats(summary, top_k=5)
+        self.assertIn("Top-k used:                      5", output.getvalue())
+        self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
 
 
 class ArgParseTest(unittest.TestCase):

@@ -41,6 +41,11 @@ approximate effort level. The combined budget must not exceed
 `--max-openrouter-tokens`. If OpenRouter returns more visible tokens because it
 uses less than its reasoning allowance, only the first `--max-new-tokens` are
 teacher-forced, compared, printed, and saved.
+
+When `--max-reasoning-tokens` is set, the request uses that fixed combined
+budget and automatic budget growth is disabled. If the selected provider does
+not honor the reasoning cap and returns no visible tokens, the script stops
+with an error instead of retrying with a larger, separately billed request.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the

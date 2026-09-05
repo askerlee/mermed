@@ -66,6 +66,7 @@ class ModelResult:
     steps: list[GenerationStep]
     teacher_forced: bool = False
     reasoning_text: str = ""
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ class QueryComparison:
 class SummaryStats:
     total_queries: int
     total_steps: int
+    avg_reasoning_tokens: float | None
     top1_match_rate: float
     avg_overlap_count: float
     avg_overlap_ratio: float
@@ -311,6 +313,7 @@ def query_openrouter(
             if (
                 reasoning_only
                 and choice.get("finish_reason") == "length"
+                and max_reasoning_tokens is None
                 and payload["max_tokens"] < token_ceiling
             ):
                 next_budget = min(payload["max_tokens"] * 2, token_ceiling)
@@ -372,10 +375,18 @@ def query_openrouter(
         message = choice.get("message") or {}
         reasoning_only = message.get("reasoning") and not message.get("content")
         if reasoning_only:
-            detail = (
-                " The response contained reasoning but no visible output tokens; "
-                f"the {token_ceiling}-token OpenRouter hard cap was reached."
-            )
+            if max_reasoning_tokens is not None:
+                detail = (
+                    " The response contained reasoning but no visible output tokens. "
+                    f"The provider did not finish reasoning within the requested "
+                    f"{max_reasoning_tokens}-token reasoning cap; the fixed "
+                    f"{initial_token_budget}-token request was not retried."
+                )
+            else:
+                detail = (
+                    " The response contained reasoning but no visible output tokens; "
+                    f"the {token_ceiling}-token OpenRouter hard cap was reached."
+                )
         else:
             detail = " Choose a model with a logprob-capable provider."
         raise RuntimeError(
@@ -416,6 +427,11 @@ def query_openrouter(
         generated_text=generated_text,
         steps=steps,
         reasoning_text=_reasoning_text(message),
+        reasoning_tokens=(
+            body.get("usage", {})
+            .get("completion_tokens_details", {})
+            .get("reasoning_tokens")
+        ),
     )
 
 
@@ -572,12 +588,23 @@ def compute_step_stats(
 
 
 def compute_summary_stats(
-    all_step_stats: list[StepStats], total_queries: int
+    all_step_stats: list[StepStats],
+    total_queries: int,
+    reasoning_token_counts: list[int | None] | None = None,
 ) -> SummaryStats:
+    reported_reasoning_counts = [
+        count for count in (reasoning_token_counts or []) if count is not None
+    ]
+    avg_reasoning_tokens = (
+        sum(reported_reasoning_counts) / len(reported_reasoning_counts)
+        if reported_reasoning_counts
+        else None
+    )
     if not all_step_stats:
         return SummaryStats(
             total_queries=total_queries,
             total_steps=0,
+            avg_reasoning_tokens=avg_reasoning_tokens,
             top1_match_rate=0.0,
             avg_overlap_count=0.0,
             avg_overlap_ratio=0.0,
@@ -591,6 +618,7 @@ def compute_summary_stats(
     return SummaryStats(
         total_queries=total_queries,
         total_steps=n,
+        avg_reasoning_tokens=avg_reasoning_tokens,
         top1_match_rate=sum(1 for s in all_step_stats if s.top1_match) / n,
         avg_overlap_count=sum(s.overlap_count for s in all_step_stats) / n,
         avg_overlap_ratio=sum(s.overlap_ratio for s in all_step_stats) / n,
@@ -608,6 +636,13 @@ def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
     print(f"{'=' * 50}")
     print(f"Total queries evaluated:         {stats.total_queries}")
     print(f"Total generation steps:          {stats.total_steps}")
+    print(f"Top-k used:                      {top_k}")
+    reasoning_average = (
+        f"{stats.avg_reasoning_tokens:.2f}"
+        if stats.avg_reasoning_tokens is not None
+        else "N/A"
+    )
+    print(f"Average reasoning tokens:        {reasoning_average}")
     match_count = int(round(stats.top1_match_rate * stats.total_steps))
     print(
         f"Top-1 match rate:                {stats.top1_match_rate:.2%} "
@@ -868,7 +903,14 @@ def main() -> int:
             )
         )
 
-    summary_stats = compute_summary_stats(all_step_stats, total_queries=len(prompts))
+    summary_stats = compute_summary_stats(
+        all_step_stats,
+        total_queries=len(prompts),
+        reasoning_token_counts=[
+            comparison.openrouter_result.reasoning_tokens
+            for comparison in comparisons
+        ],
+    )
     print_summary_stats(summary_stats, args.top_k)
 
     if args.json_output:
