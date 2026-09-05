@@ -4,7 +4,7 @@ import os
 import unittest
 import urllib.error
 from argparse import Namespace
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,6 +12,7 @@ from compare_logprobs import (
     EXAMPLE_QUERIES,
     GenerationStep,
     ModelResult,
+    ReasoningBudgetExceeded,
     StepStats,
     TokenLogprob,
     _huggingface_placement,
@@ -593,7 +594,7 @@ class HuggingFacePromptTest(unittest.TestCase):
 
 
 class ComparisonOutputTest(unittest.TestCase):
-    def test_prints_only_first_and_last_ten_steps(self):
+    def test_prints_only_first_and_last_three_steps(self):
         steps = [
             GenerationStep(
                 f" token-{index}",
@@ -613,12 +614,12 @@ class ComparisonOutputTest(unittest.TestCase):
             print_comparison(result, result)
 
         rendered = output.getvalue()
-        self.assertIn("=== Generation step 10 ===", rendered)
-        self.assertNotIn("=== Generation step 11 ===", rendered)
-        self.assertNotIn("=== Generation step 20 ===", rendered)
-        self.assertIn("=== Generation step 21 ===", rendered)
+        self.assertIn("=== Generation step 3 ===", rendered)
+        self.assertNotIn("=== Generation step 4 ===", rendered)
+        self.assertNotIn("=== Generation step 27 ===", rendered)
+        self.assertIn("=== Generation step 28 ===", rendered)
         self.assertIn("=== Generation step 30 ===", rendered)
-        self.assertIn("10 generation steps omitted", rendered)
+        self.assertIn("24 generation steps omitted", rendered)
         self.assertNotIn("token-15", rendered)
 
     def test_loops_over_example_queries_when_prompt_is_none(self):
@@ -670,6 +671,62 @@ class ComparisonOutputTest(unittest.TestCase):
         # Ensure all example queries were passed as prompts in order
         called_prompts = [call.args[1] for call in mock_openrouter.call_args_list]
         self.assertEqual(called_prompts, list(EXAMPLE_QUERIES))
+
+    def test_skips_failed_query_and_excludes_it_from_summary(self):
+        reference_steps = [
+            GenerationStep(" first", [TokenLogprob(" first", -0.1)]),
+        ]
+        openrouter_result = ModelResult(
+            "openrouter", "remote/model", " first", reference_steps
+        )
+        huggingface_result = ModelResult(
+            "huggingface",
+            "local/model",
+            " first",
+            reference_steps,
+            teacher_forced=True,
+        )
+        args = Namespace(
+            prompt=None,
+            openrouter_model="remote/model",
+            openrouter_provider="digitalocean",
+            hf_model="local/model",
+            top_k=1,
+            max_new_tokens=1,
+            max_openrouter_tokens=4100,
+            max_reasoning_tokens=4000,
+            reasoning_effort=None,
+            device="cpu",
+            json_output=None,
+        )
+
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            patch("compare_logprobs.parse_args", return_value=args),
+            patch(
+                "compare_logprobs.query_openrouter",
+                side_effect=[ReasoningBudgetExceeded("reasoning budget exhausted")]
+                + [openrouter_result] * (len(EXAMPLE_QUERIES) - 1),
+            ) as mock_openrouter,
+            patch(
+                "compare_logprobs.query_huggingface",
+                return_value=huggingface_result,
+            ) as mock_hf,
+            patch("compare_logprobs.print_summary_stats") as print_summary,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(mock_openrouter.call_count, len(EXAMPLE_QUERIES))
+        self.assertEqual(mock_hf.call_count, len(EXAMPLE_QUERIES) - 1)
+        self.assertEqual(print_summary.call_args.args[0].total_queries, 19)
+        self.assertEqual(
+            print_summary.call_args.args[0].skipped_reasoning_queries,
+            1,
+        )
+        self.assertIn("Skipping query 1: reasoning budget exhausted", stderr.getvalue())
 
 
 class StatsComputationTest(unittest.TestCase):
@@ -751,8 +808,10 @@ class StatsComputationTest(unittest.TestCase):
             [s1, s2],
             total_queries=2,
             reasoning_token_counts=[100, 300],
+            skipped_reasoning_queries=3,
         )
         self.assertEqual(summary.total_queries, 2)
+        self.assertEqual(summary.skipped_reasoning_queries, 3)
         self.assertEqual(summary.total_steps, 2)
         self.assertEqual(summary.avg_reasoning_tokens, 200)
         self.assertAlmostEqual(summary.top1_match_rate, 0.5)
@@ -767,6 +826,7 @@ class StatsComputationTest(unittest.TestCase):
             print_summary_stats(summary, top_k=5)
         self.assertIn("Top-k used:                      5", output.getvalue())
         self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
+        self.assertIn("Queries skipped (long reasoning):       3", output.getvalue())
 
 
 class ArgParseTest(unittest.TestCase):
@@ -787,9 +847,9 @@ class ArgParseTest(unittest.TestCase):
             self.assertIsNone(args.prompt)
             self.assertEqual(args.openrouter_model, "remote/model")
             self.assertEqual(args.openrouter_provider, "fireworks")
-            self.assertEqual(args.max_openrouter_tokens, 16384)
-            self.assertIsNone(args.max_reasoning_tokens)
-            self.assertEqual(args.reasoning_effort, "minimal")
+            self.assertEqual(args.max_openrouter_tokens, 4100)
+            self.assertEqual(args.max_reasoning_tokens, 4000)
+            self.assertIsNone(args.reasoning_effort)
 
     def test_numeric_reasoning_cap_disables_default_effort(self):
         with patch(
@@ -808,6 +868,24 @@ class ArgParseTest(unittest.TestCase):
 
         self.assertEqual(args.max_reasoning_tokens, 1000)
         self.assertIsNone(args.reasoning_effort)
+
+    def test_reasoning_effort_disables_default_numeric_cap(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+                "--reasoning-effort",
+                "low",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertIsNone(args.max_reasoning_tokens)
+        self.assertEqual(args.reasoning_effort, "low")
 
     def test_reasoning_cap_must_fit_with_visible_budget(self):
         with patch(

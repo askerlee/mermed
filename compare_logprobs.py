@@ -95,6 +95,7 @@ class QueryComparison:
 @dataclass(frozen=True)
 class SummaryStats:
     total_queries: int
+    skipped_reasoning_queries: int
     total_steps: int
     avg_reasoning_tokens: float | None
     top1_match_rate: float
@@ -107,9 +108,14 @@ class SummaryStats:
     avg_prob_diff: float
 
 
+class ReasoningBudgetExceeded(RuntimeError):
+    pass
+
+
 _HF_MODEL_CACHE: dict[tuple[str, str | None], tuple[Any, Any]] = {}
 _OPENROUTER_MAX_ATTEMPTS = 4
 _REASONING_EFFORT_TOKEN_ALLOWANCE = 1000
+_DISPLAY_EDGE_TOKENS = 3
 _RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504, 529}
 
 
@@ -404,7 +410,8 @@ def query_openrouter(
                 )
         else:
             detail = " Choose a model with a logprob-capable provider."
-        raise RuntimeError(
+        error_type = ReasoningBudgetExceeded if reasoning_only else RuntimeError
+        raise error_type(
             f"OpenRouter provider {provider!r} did not return token logprobs.{detail}"
         )
     try:
@@ -606,6 +613,7 @@ def compute_summary_stats(
     all_step_stats: list[StepStats],
     total_queries: int,
     reasoning_token_counts: list[int | None] | None = None,
+    skipped_reasoning_queries: int = 0,
 ) -> SummaryStats:
     reported_reasoning_counts = [
         count for count in (reasoning_token_counts or []) if count is not None
@@ -618,6 +626,7 @@ def compute_summary_stats(
     if not all_step_stats:
         return SummaryStats(
             total_queries=total_queries,
+            skipped_reasoning_queries=skipped_reasoning_queries,
             total_steps=0,
             avg_reasoning_tokens=avg_reasoning_tokens,
             top1_match_rate=0.0,
@@ -632,6 +641,7 @@ def compute_summary_stats(
     n = len(all_step_stats)
     return SummaryStats(
         total_queries=total_queries,
+        skipped_reasoning_queries=skipped_reasoning_queries,
         total_steps=n,
         avg_reasoning_tokens=avg_reasoning_tokens,
         top1_match_rate=sum(1 for s in all_step_stats if s.top1_match) / n,
@@ -650,6 +660,7 @@ def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
     print("AVERAGE STATS SUMMARY")
     print(f"{'=' * 50}")
     print(f"Total queries evaluated:         {stats.total_queries}")
+    print(f"Queries skipped (long reasoning):{stats.skipped_reasoning_queries:>8}")
     print(f"Total generation steps:          {stats.total_steps}")
     print(f"Top-k used:                      {top_k}")
     reasoning_average = (
@@ -678,35 +689,52 @@ def print_comparison(left: ModelResult, right: ModelResult) -> None:
     print(f"OpenRouter:   {left.model}")
     print(f"Hugging Face: {right.model}")
     step_count = max(len(left.steps), len(right.steps))
-    if step_count > 20:
-        first_text = "".join(step.generated_token for step in left.steps[:10])
-        last_text = "".join(step.generated_token for step in left.steps[-10:])
+    displayed_step_count = _DISPLAY_EDGE_TOKENS * 2
+    if step_count > displayed_step_count:
+        first_text = "".join(
+            step.generated_token for step in left.steps[:_DISPLAY_EDGE_TOKENS]
+        )
+        last_text = "".join(
+            step.generated_token for step in left.steps[-_DISPLAY_EDGE_TOKENS:]
+        )
         print(
             "Reference continuation (OpenRouter): "
-            f"{first_text!r} ... [{step_count - 20} tokens omitted] ... {last_text!r}"
+            f"{first_text!r} ... [{step_count - displayed_step_count} tokens "
+            f"omitted] ... {last_text!r}"
         )
     else:
         print(f"Reference continuation (OpenRouter): {left.generated_text!r}")
     if right.teacher_forced:
         print("Hugging Face was teacher-forced along that continuation.")
-    elif len(right.steps) > 20:
-        first_text = "".join(step.generated_token for step in right.steps[:10])
-        last_text = "".join(step.generated_token for step in right.steps[-10:])
+    elif len(right.steps) > displayed_step_count:
+        first_text = "".join(
+            step.generated_token for step in right.steps[:_DISPLAY_EDGE_TOKENS]
+        )
+        last_text = "".join(
+            step.generated_token for step in right.steps[-_DISPLAY_EDGE_TOKENS:]
+        )
         print(
             "Hugging Face generated: "
-            f"{first_text!r} ... [{len(right.steps) - 20} tokens omitted] ... "
+            f"{first_text!r} ... "
+            f"[{len(right.steps) - displayed_step_count} tokens omitted] ... "
             f"{last_text!r}"
         )
     else:
         print(f"Hugging Face generated: {right.generated_text!r}")
 
-    if step_count > 20:
-        step_indexes = [*range(10), *range(step_count - 10, step_count)]
+    if step_count > displayed_step_count:
+        step_indexes = [
+            *range(_DISPLAY_EDGE_TOKENS),
+            *range(step_count - _DISPLAY_EDGE_TOKENS, step_count),
+        ]
     else:
         step_indexes = range(step_count)
     for position, step_index in enumerate(step_indexes):
-        if step_count > 20 and position == 10:
-            print(f"\n... {step_count - 20} generation steps omitted ...")
+        if step_count > displayed_step_count and position == _DISPLAY_EDGE_TOKENS:
+            print(
+                f"\n... {step_count - displayed_step_count} generation steps "
+                "omitted ..."
+            )
         print(f"\n=== Generation step {step_index + 1} ===")
         left_step = left.steps[step_index] if step_index < len(left.steps) else None
         right_step = right.steps[step_index] if step_index < len(right.steps) else None
@@ -812,22 +840,22 @@ def parse_args() -> argparse.Namespace:
         "--max-reasoning-tokens",
         type=int,
         help=(
-            "Cap OpenRouter reasoning tokens before generation; support varies "
-            "by model and provider"
+            "Cap OpenRouter reasoning tokens before generation (default: 4000); "
+            "support varies by model and provider"
         ),
     )
     reasoning_group.add_argument(
         "--reasoning-effort",
         choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
-        help="OpenRouter reasoning effort (default: minimal)",
+        help="OpenRouter reasoning effort; overrides the default numeric cap",
     )
     parser.add_argument(
         "--max-openrouter-tokens",
         type=int,
-        default=16384,
+        default=4100,
         help=(
             "Hard cap for automatic OpenRouter budget growth when reasoning "
-            "exhausts --max-new-tokens (default: 16384)"
+            "exhausts --max-new-tokens (default: 4100)"
         ),
     )
     parser.add_argument(
@@ -841,7 +869,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     if args.max_reasoning_tokens is None and args.reasoning_effort is None:
-        args.reasoning_effort = "minimal"
+        args.max_reasoning_tokens = 4000
 
     if not 1 <= args.top_k <= 20:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
@@ -876,6 +904,7 @@ def main() -> int:
 
     comparisons: list[QueryComparison] = []
     all_step_stats: list[StepStats] = []
+    skipped_reasoning_queries = 0
 
     for idx, prompt in enumerate(prompts, start=1):
         if len(prompts) > 1:
@@ -906,9 +935,13 @@ def main() -> int:
                 ],
                 reasoning_text=openrouter_result.reasoning_text,
             )
+        except ReasoningBudgetExceeded as error:
+            skipped_reasoning_queries += 1
+            print(f"Skipping query {idx}: {error}", file=sys.stderr)
+            continue
         except RuntimeError as error:
-            print(f"error: {error}", file=sys.stderr)
-            return 1
+            print(f"Skipping query {idx}: {error}", file=sys.stderr)
+            continue
 
         print_comparison(openrouter_result, huggingface_result)
 
@@ -934,11 +967,12 @@ def main() -> int:
 
     summary_stats = compute_summary_stats(
         all_step_stats,
-        total_queries=len(prompts),
+        total_queries=len(comparisons),
         reasoning_token_counts=[
             comparison.openrouter_result.reasoning_tokens
             for comparison in comparisons
         ],
+        skipped_reasoning_queries=skipped_reasoning_queries,
     )
     print_summary_stats(summary_stats, args.top_k)
 

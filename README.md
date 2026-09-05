@@ -29,31 +29,30 @@ teacher-forced along those visible tokens. Models whose chat templates support
 If a response reaches `--max-new-tokens` with reasoning but no visible output,
 the script retries from scratch with twice the OpenRouter token budget. It
 continues until visible output appears or `--max-openrouter-tokens` is reached
-(default: 16384). These are new billable requests, not continuations of the
+(default: 4100). These are new billable requests, not continuations of the
 same generation, so lower the hard cap when controlling cost is more important.
 
-By default, the script requests `--reasoning-effort minimal` and reserves 1000
-tokens for reasoning in addition to `--max-new-tokens`. Thus the default sends
-one fixed 1100-token OpenRouter request while comparing at most 100 visible
-tokens. Automatic budget growth remains disabled. Supported effort values are
-`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; providers map
-unsupported levels to their nearest option.
+By default, the script requests `--max-reasoning-tokens 4000` and reserves
+`--max-new-tokens` in addition to that cap for visible output. Thus the default
+sends one fixed 4100-token OpenRouter request while comparing at most 100
+visible tokens. Automatic budget growth remains disabled. Exact token caps are
+supported by Anthropic, Gemini thinking, and some Qwen thinking models; other
+reasoning models may map the value to an approximate effort level.
 
-Alternatively, use `--max-reasoning-tokens` to request a numeric reasoning cap.
-The two reasoning controls are mutually exclusive. The
-script reserves `--max-new-tokens` in addition to that cap for visible output,
-so `--max-reasoning-tokens 1000 --max-new-tokens 100` sends a total completion
-budget of 1100. Exact token caps are supported by Anthropic, Gemini thinking,
-and some Qwen thinking models; other reasoning models may map the value to an
-approximate effort level. The combined budget must not exceed
+Alternatively, use `--reasoning-effort` with `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, or `max`. The two reasoning controls are mutually
+exclusive, and an explicit effort replaces the default numeric cap. The
+combined budget must not exceed
 `--max-openrouter-tokens`. If OpenRouter returns more visible tokens because it
 uses less than its reasoning allowance, only the first `--max-new-tokens` are
 teacher-forced, compared, printed, and saved.
 
 When either reasoning control is set, the request uses a fixed budget and
 automatic budget growth is disabled. If the selected provider returns no
-visible tokens, the script stops with an error instead of retrying with a
-larger, separately billed request.
+visible tokens, the script skips that query instead of retrying with a larger,
+separately billed request. Skipped queries are excluded from all summary
+statistics, and the summary reports how many were skipped for overly long
+reasoning.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the
@@ -72,8 +71,8 @@ python compare_logprobs.py \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
   --max-new-tokens 100 \
-  --reasoning-effort minimal \
-  --max-openrouter-tokens 16384 \
+  --max-reasoning-tokens 4000 \
+  --max-openrouter-tokens 4100 \
   --json-output comparison.json
 
 # If prompt is omitted, it evaluates all EXAMPLE_QUERIES and computes average stats:
