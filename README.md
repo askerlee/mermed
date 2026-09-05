@@ -38,7 +38,9 @@ so `--max-reasoning-tokens 1000 --max-new-tokens 100` sends a total completion
 budget of 1100. Exact token caps are supported by Anthropic, Gemini thinking,
 and some Qwen thinking models; other reasoning models may map the value to an
 approximate effort level. The combined budget must not exceed
-`--max-openrouter-tokens`.
+`--max-openrouter-tokens`. If OpenRouter returns more visible tokens because it
+uses less than its reasoning allowance, only the first `--max-new-tokens` are
+teacher-forced, compared, printed, and saved.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the

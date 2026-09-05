@@ -382,9 +382,9 @@ def query_openrouter(
             f"OpenRouter provider {provider!r} did not return token logprobs.{detail}"
         )
     try:
-        content_logprobs = choice["logprobs"]["content"]
+        content_logprobs = choice["logprobs"]["content"][:max_new_tokens]
         message = choice["message"]
-        generated_text = message["content"] or ""
+        generated_text = "".join(item["token"] for item in content_logprobs)
     except (KeyError, TypeError) as error:
         raise RuntimeError(
             f"OpenRouter returned malformed token logprobs: {choice.get('logprobs')}"

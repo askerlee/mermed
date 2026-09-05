@@ -180,6 +180,36 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(request_body["max_tokens"], 1100)
         self.assertEqual(request_body["reasoning"], {"max_tokens": 1000})
 
+    def test_caps_visible_tokens_used_for_comparison(self):
+        content = [
+            {
+                "token": token,
+                "logprob": -0.1,
+                "top_logprobs": [{"token": token, "logprob": -0.1}],
+            }
+            for token in [" one", " two", " three"]
+        ]
+        response = {
+            "choices": [
+                {
+                    "message": {"content": " one two three"},
+                    "logprobs": {"content": content},
+                }
+            ]
+        }
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=FakeResponse(json.dumps(response).encode()),
+        ):
+            result = query_openrouter("vendor/model", "Question", 1, 2, "test-key")
+
+        self.assertEqual(result.generated_text, " one two")
+        self.assertEqual(
+            [step.generated_token for step in result.steps],
+            [" one", " two"],
+        )
+
     def test_rejects_response_without_ranked_tokens(self):
         response = {
             "choices": [
@@ -604,7 +634,7 @@ class ArgParseTest(unittest.TestCase):
             self.assertEqual(args.openrouter_model, "remote/model")
             self.assertEqual(args.openrouter_provider, "fireworks")
             self.assertEqual(args.max_openrouter_tokens, 16384)
-            self.assertIsNone(args.max_reasoning_tokens)
+            self.assertEqual(args.max_reasoning_tokens, 1000)
 
     def test_reasoning_cap_must_fit_with_visible_budget(self):
         with patch(
