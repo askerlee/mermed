@@ -67,6 +67,13 @@ OpenRouter request is retried once using that provider limit. The local model
 still returns the requested `--top-k`; statistics use the ranks available from
 both models.
 
+Multiple prompts can be submitted concurrently with
+`--openrouter-concurrency`. OpenRouter requests run in parallel and their
+results are restored to prompt order before Hugging Face scoring, which remains
+serial to avoid competing forward passes and excess accelerator memory use.
+The default concurrency is 1. Start with 4 for the built-in query sets; higher
+values may trigger provider queueing or rate limits.
+
 ## Usage
 
 ```bash
@@ -85,6 +92,7 @@ python compare_logprobs.py \
 python compare_logprobs.py \
   --openrouter-model openai/gpt-4.1-mini \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
+  --openrouter-concurrency 4 \
   --top-k 20 \
   --max-new-tokens 3
 

@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -978,6 +979,12 @@ def parse_args() -> argparse.Namespace:
         "--openrouter-provider",
         help="OpenRouter provider slug to use exclusively, such as fireworks",
     )
+    parser.add_argument(
+        "--openrouter-concurrency",
+        type=int,
+        default=1,
+        help="Number of OpenRouter requests to run concurrently (default: 1)",
+    )
     parser.add_argument("--hf-model", required=True, help="Hub model ID or local path")
     parser.add_argument("-k", "--top-k", type=int, default=20)
     parser.add_argument("--max-new-tokens", type=int, default=100)
@@ -1034,6 +1041,8 @@ def parse_args() -> argparse.Namespace:
 
     if not 1 <= args.top_k <= 20:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
+    if args.openrouter_concurrency < 1:
+        parser.error("--openrouter-concurrency must be at least 1")
     if args.max_new_tokens < 1:
         parser.error("--max-new-tokens must be at least 1")
     if args.max_reasoning_tokens is not None and args.max_reasoning_tokens < 1:
@@ -1071,6 +1080,48 @@ def main() -> int:
     comparisons: list[QueryComparison] = []
     all_step_stats: list[StepStats] = []
     skipped_reasoning_queries = 0
+    openrouter_concurrency = getattr(args, "openrouter_concurrency", 1)
+    openrouter_results: list[ModelResult | Exception | None] = [None] * len(prompts)
+
+    def fetch_openrouter(prompt: str) -> tuple[ModelResult, float]:
+        phase_started = time.monotonic()
+        result = query_openrouter(
+            args.openrouter_model,
+            prompt,
+            args.top_k,
+            args.max_new_tokens,
+            api_key,
+            args.openrouter_provider,
+            args.max_openrouter_tokens,
+            args.max_reasoning_tokens,
+            args.reasoning_effort,
+        )
+        return result, time.monotonic() - phase_started
+
+    worker_count = min(openrouter_concurrency, len(prompts))
+    print(
+        f"Submitting {len(prompts)} OpenRouter request(s) with "
+        f"concurrency {worker_count}...",
+        file=sys.stderr,
+    )
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(fetch_openrouter, prompt): idx
+            for idx, prompt in enumerate(prompts)
+        }
+        for future in as_completed(futures):
+            result_index = futures[future]
+            try:
+                result, elapsed = future.result()
+                openrouter_results[result_index] = result
+                print(
+                    f"Query {result_index + 1}: OpenRouter finished in "
+                    f"{elapsed:.1f}s with "
+                    f"{result.reasoning_tokens or 'unknown'} reasoning tokens",
+                    file=sys.stderr,
+                )
+            except (ReasoningBudgetExceeded, RuntimeError) as error:
+                openrouter_results[result_index] = error
 
     for idx, prompt in enumerate(prompts, start=1):
         if len(prompts) > 1:
@@ -1078,20 +1129,19 @@ def main() -> int:
             print(f"[{idx}/{len(prompts)}] Prompt: {prompt}")
             print(f"{'=' * 80}")
 
+        openrouter_outcome = openrouter_results[idx - 1]
+        if isinstance(openrouter_outcome, ReasoningBudgetExceeded):
+            skipped_reasoning_queries += 1
+            print(f"Skipping query {idx}: {openrouter_outcome}", file=sys.stderr)
+            continue
+        if isinstance(openrouter_outcome, RuntimeError):
+            print(f"Skipping query {idx}: {openrouter_outcome}", file=sys.stderr)
+            continue
+        if openrouter_outcome is None:
+            raise RuntimeError(f"OpenRouter query {idx} produced no result")
+        openrouter_result = openrouter_outcome
+
         try:
-            phase_started = time.monotonic()
-            print(f"Query {idx}: waiting for OpenRouter...", file=sys.stderr)
-            openrouter_result = query_openrouter(
-                args.openrouter_model,
-                prompt,
-                args.top_k,
-                args.max_new_tokens,
-                api_key,
-                args.openrouter_provider,
-                args.max_openrouter_tokens,
-                args.max_reasoning_tokens,
-                args.reasoning_effort,
-            )
             local_model_cached = (args.hf_model, args.device) in _HF_MODEL_CACHE
             local_phase = (
                 "local scoring"
@@ -1099,10 +1149,7 @@ def main() -> int:
                 else "Hugging Face model loading and local scoring"
             )
             print(
-                f"Query {idx}: OpenRouter finished in "
-                f"{time.monotonic() - phase_started:.1f}s; {local_phase} with "
-                f"{openrouter_result.reasoning_tokens or 'unknown'} reasoning "
-                "tokens...",
+                f"Query {idx}: {local_phase}...",
                 file=sys.stderr,
             )
             phase_started = time.monotonic()
@@ -1122,10 +1169,6 @@ def main() -> int:
                 f"{time.monotonic() - phase_started:.1f}s",
                 file=sys.stderr,
             )
-        except ReasoningBudgetExceeded as error:
-            skipped_reasoning_queries += 1
-            print(f"Skipping query {idx}: {error}", file=sys.stderr)
-            continue
         except RuntimeError as error:
             print(f"Skipping query {idx}: {error}", file=sys.stderr)
             continue

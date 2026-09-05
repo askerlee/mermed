@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import threading
 import unittest
 import urllib.error
 from argparse import Namespace
@@ -569,6 +570,61 @@ class MainWorkflowTest(unittest.TestCase):
             rendered.index("--- Query summary ---"),
             rendered.index("AVERAGE STATS SUMMARY"),
         )
+
+    def test_runs_openrouter_requests_concurrently_and_scores_in_prompt_order(self):
+        prompts = ("first prompt", "second prompt")
+        barrier = threading.Barrier(len(prompts))
+        completed_prompts = []
+
+        def concurrent_openrouter(model, prompt, *args):
+            barrier.wait(timeout=1)
+            completed_prompts.append(prompt)
+            step = GenerationStep(f" {prompt}", [TokenLogprob(f" {prompt}", -0.1)])
+            return ModelResult("openrouter", model, f" {prompt}", [step])
+
+        scored_prompts = []
+
+        def serial_huggingface(model, prompt, *args, **kwargs):
+            scored_prompts.append(prompt)
+            step = GenerationStep(f" {prompt}", [TokenLogprob(f" {prompt}", -0.1)])
+            return ModelResult("huggingface", model, f" {prompt}", [step], True)
+
+        args = Namespace(
+            prompt=None,
+            medical_queries=False,
+            openrouter_model="remote/model",
+            openrouter_provider=None,
+            openrouter_concurrency=2,
+            hf_model="local/model",
+            top_k=1,
+            max_new_tokens=1,
+            max_openrouter_tokens=4100,
+            max_reasoning_tokens=4000,
+            reasoning_effort=None,
+            device="cpu",
+            json_output=None,
+        )
+
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            patch("compare_logprobs.EXAMPLE_QUERIES", prompts),
+            patch("compare_logprobs.parse_args", return_value=args),
+            patch(
+                "compare_logprobs.query_openrouter",
+                side_effect=concurrent_openrouter,
+            ),
+            patch(
+                "compare_logprobs.query_huggingface",
+                side_effect=serial_huggingface,
+            ),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertCountEqual(completed_prompts, prompts)
+        self.assertEqual(scored_prompts, list(prompts))
 
 
 class HuggingFacePromptTest(unittest.TestCase):
