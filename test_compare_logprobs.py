@@ -2,6 +2,7 @@ import io
 import json
 import os
 import unittest
+import urllib.error
 from argparse import Namespace
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -63,6 +64,30 @@ class HuggingFacePlacementTest(unittest.TestCase):
 
 
 class OpenRouterTest(unittest.TestCase):
+    def completion_response(self):
+        return FakeResponse(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": " Paris"},
+                            "logprobs": {
+                                "content": [
+                                    {
+                                        "token": " Paris",
+                                        "logprob": -0.1,
+                                        "top_logprobs": [
+                                            {"token": " Paris", "logprob": -0.1}
+                                        ],
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+        )
+
     def test_normalizes_chat_completion_logprobs(self):
         response = {
             "choices": [
@@ -165,6 +190,50 @@ class OpenRouterTest(unittest.TestCase):
                 "Example Provider.*reasoning but no output tokens",
             ):
                 query_openrouter("vendor/model", "The capital is", 2, 1, "test-key")
+
+    def test_retries_rate_limit_using_retry_after(self):
+        rate_limit = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "0"},
+            FakeResponse(b'{"error":{"message":"rate limited"}}'),
+        )
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=[rate_limit, self.completion_response()],
+            ) as urlopen,
+            patch("compare_logprobs.time.sleep") as sleep,
+            redirect_stdout(io.StringIO()),
+        ):
+            result = query_openrouter(
+                "vendor/model", "The capital is", 1, 1, "test-key"
+            )
+
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.0)
+        self.assertEqual(result.generated_text, " Paris")
+
+    def test_does_not_retry_permanent_http_error(self):
+        bad_request = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            FakeResponse(b'{"error":{"message":"invalid request"}}'),
+        )
+
+        with (
+            patch("urllib.request.urlopen", side_effect=bad_request) as urlopen,
+            patch("compare_logprobs.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                query_openrouter("vendor/model", "The capital is", 1, 1, "test-key")
+
+        urlopen.assert_called_once()
+        sleep.assert_not_called()
 
 
 class MainWorkflowTest(unittest.TestCase):

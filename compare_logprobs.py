@@ -8,9 +8,12 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +104,24 @@ class SummaryStats:
 
 
 _HF_MODEL_CACHE: dict[tuple[str, str | None], tuple[Any, Any]] = {}
+_OPENROUTER_MAX_ATTEMPTS = 4
+_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504, 529}
+
+
+def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
+    retry_after = error.headers.get("Retry-After") if error.headers else None
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return float(2 ** (attempt - 1))
 
 
 def load_huggingface_model(
@@ -182,14 +203,29 @@ def query_openrouter(
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            body = json.load(response)
-    except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenRouter returned HTTP {error.code}: {details}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Could not reach OpenRouter: {error.reason}") from error
+    for attempt in range(1, _OPENROUTER_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                body = json.load(response)
+            break
+        except urllib.error.HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace")
+            if (
+                error.code not in _RETRYABLE_HTTP_CODES
+                or attempt == _OPENROUTER_MAX_ATTEMPTS
+            ):
+                raise RuntimeError(
+                    f"OpenRouter returned HTTP {error.code}: {details}"
+                ) from error
+            delay = _retry_delay(error, attempt)
+            print(
+                f"OpenRouter returned HTTP {error.code}; retrying in {delay:g}s "
+                f"({attempt}/{_OPENROUTER_MAX_ATTEMPTS - 1})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"Could not reach OpenRouter: {error.reason}") from error
 
     try:
         choice = body["choices"][0]
