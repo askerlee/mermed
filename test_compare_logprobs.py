@@ -161,6 +161,25 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(result.reasoning_text, "Work it out")
         self.assertEqual([step.generated_token for step in result.steps], [" Answer"])
 
+    def test_caps_reasoning_and_reserves_visible_token_budget(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self.completion_response(),
+        ) as urlopen:
+            query_openrouter(
+                "vendor/model",
+                "Question",
+                1,
+                100,
+                "test-key",
+                max_openrouter_tokens=2000,
+                max_reasoning_tokens=1000,
+            )
+
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_body["max_tokens"], 1100)
+        self.assertEqual(request_body["reasoning"], {"max_tokens": 1000})
+
     def test_rejects_response_without_ranked_tokens(self):
         response = {
             "choices": [
@@ -362,6 +381,7 @@ class MainWorkflowTest(unittest.TestCase):
             top_k=20,
             max_new_tokens=2,
             max_openrouter_tokens=1000,
+            max_reasoning_tokens=100,
             device="cpu",
             json_output=None,
         )
@@ -384,6 +404,7 @@ class MainWorkflowTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(query_openrouter.call_args.args[5], "fireworks")
         self.assertEqual(query_openrouter.call_args.args[6], 1000)
+        self.assertEqual(query_openrouter.call_args.args[7], 100)
         self.assertEqual(
             query_huggingface.call_args.kwargs["reference_tokens"],
             [" first", " second"],
@@ -450,6 +471,7 @@ class HuggingFacePromptTest(unittest.TestCase):
             top_k=20,
             max_new_tokens=1,
             max_openrouter_tokens=1000,
+            max_reasoning_tokens=None,
             device="cpu",
             json_output=None,
         )
@@ -582,6 +604,27 @@ class ArgParseTest(unittest.TestCase):
             self.assertEqual(args.openrouter_model, "remote/model")
             self.assertEqual(args.openrouter_provider, "fireworks")
             self.assertEqual(args.max_openrouter_tokens, 16384)
+            self.assertIsNone(args.max_reasoning_tokens)
+
+    def test_reasoning_cap_must_fit_with_visible_budget(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+                "--max-new-tokens",
+                "100",
+                "--max-reasoning-tokens",
+                "1000",
+                "--max-openrouter-tokens",
+                "1050",
+            ],
+        ):
+            with self.assertRaises(SystemExit):
+                parse_args()
 
     def test_prompt_provided(self):
         with patch(

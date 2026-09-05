@@ -269,20 +269,29 @@ def query_openrouter(
     api_key: str,
     provider: str | None = None,
     max_openrouter_tokens: int | None = None,
+    max_reasoning_tokens: int | None = None,
 ) -> ModelResult:
-    token_ceiling = max_openrouter_tokens or max_new_tokens
+    initial_token_budget = max_new_tokens + (max_reasoning_tokens or 0)
+    token_ceiling = max_openrouter_tokens or initial_token_budget
+    if initial_token_budget > token_ceiling:
+        raise RuntimeError(
+            "The OpenRouter hard cap must cover --max-new-tokens plus "
+            "--max-reasoning-tokens"
+        )
     provider_preferences: dict[str, Any] = {"require_parameters": True}
     if provider:
         provider_preferences["only"] = [provider]
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_new_tokens,
+        "max_tokens": initial_token_budget,
         "temperature": 0,
         "logprobs": True,
         "top_logprobs": top_k,
         "provider": provider_preferences,
     }
+    if max_reasoning_tokens is not None:
+        payload["reasoning"] = {"max_tokens": max_reasoning_tokens}
     request = _openrouter_request(payload, api_key)
 
     transient_failures = 0
@@ -727,6 +736,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-k", "--top-k", type=int, default=20)
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument(
+        "--max-reasoning-tokens",
+        type=int,
+        default=1000,
+        help=(
+            "Cap OpenRouter reasoning tokens before generation; support varies "
+            "by model and provider"
+        ),
+    )
+    parser.add_argument(
         "--max-openrouter-tokens",
         type=int,
         default=16384,
@@ -749,8 +767,16 @@ def parse_args() -> argparse.Namespace:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
     if args.max_new_tokens < 1:
         parser.error("--max-new-tokens must be at least 1")
-    if args.max_openrouter_tokens < args.max_new_tokens:
-        parser.error("--max-openrouter-tokens must be at least --max-new-tokens")
+    if args.max_reasoning_tokens is not None and args.max_reasoning_tokens < 1:
+        parser.error("--max-reasoning-tokens must be at least 1")
+    initial_openrouter_tokens = args.max_new_tokens + (
+        args.max_reasoning_tokens or 0
+    )
+    if args.max_openrouter_tokens < initial_openrouter_tokens:
+        parser.error(
+            "--max-openrouter-tokens must be at least --max-new-tokens plus "
+            "--max-reasoning-tokens"
+        )
     return args
 
 
@@ -781,6 +807,7 @@ def main() -> int:
                 api_key,
                 args.openrouter_provider,
                 args.max_openrouter_tokens,
+                args.max_reasoning_tokens,
             )
             huggingface_result = query_huggingface(
                 args.hf_model,

@@ -31,6 +31,14 @@ the script retries from scratch with twice the OpenRouter token budget. It
 continues until visible output appears or `--max-openrouter-tokens` is reached
 (default: 16384). These are new billable requests, not continuations of the
 same generation, so lower the hard cap when controlling cost is more important.
+
+Use `--max-reasoning-tokens` to request a reasoning cap before generation. The
+script reserves `--max-new-tokens` in addition to that cap for visible output,
+so `--max-reasoning-tokens 1000 --max-new-tokens 100` sends a total completion
+budget of 1100. Exact token caps are supported by Anthropic, Gemini thinking,
+and some Qwen thinking models; other reasoning models may map the value to an
+approximate effort level. The combined budget must not exceed
+`--max-openrouter-tokens`.
 Transient OpenRouter responses such as HTTP 429 and provider-side 5xx errors
 are retried up to three times, respecting `Retry-After` when supplied.
 If a provider reports a smaller `top_logprobs` limit than requested, the
@@ -48,7 +56,8 @@ python compare_logprobs.py \
   --openrouter-provider fireworks \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
-  --max-new-tokens 3 \
+  --max-new-tokens 100 \
+  --max-reasoning-tokens 1000 \
   --max-openrouter-tokens 16384 \
   --json-output comparison.json
 
