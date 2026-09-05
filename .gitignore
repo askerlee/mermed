@@ -1,1 +1,4 @@
 .vscode/
+.ruff_cache
+.deepeval
+__pycache__
