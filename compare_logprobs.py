@@ -268,7 +268,9 @@ def query_openrouter(
     max_new_tokens: int,
     api_key: str,
     provider: str | None = None,
+    max_openrouter_tokens: int | None = None,
 ) -> ModelResult:
+    token_ceiling = max_openrouter_tokens or max_new_tokens
     provider_preferences: dict[str, Any] = {"require_parameters": True}
     if provider:
         provider_preferences["only"] = [provider]
@@ -289,6 +291,30 @@ def query_openrouter(
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
                 body = json.load(response)
+            choices = body.get("choices") if isinstance(body, dict) else None
+            choice = choices[0] if choices else None
+            message = choice.get("message") if isinstance(choice, dict) else None
+            reasoning_only = (
+                isinstance(message, dict)
+                and bool(_reasoning_text(message))
+                and not message.get("content")
+            )
+            if (
+                reasoning_only
+                and choice.get("finish_reason") == "length"
+                and payload["max_tokens"] < token_ceiling
+            ):
+                next_budget = min(payload["max_tokens"] * 2, token_ceiling)
+                print(
+                    "OpenRouter exhausted "
+                    f"{payload['max_tokens']} tokens on reasoning; retrying from "
+                    f"scratch with {next_budget} (hard cap: {token_ceiling})",
+                    file=sys.stderr,
+                )
+                payload["max_tokens"] = next_budget
+                request = _openrouter_request(payload, api_key)
+                transient_failures = 0
+                continue
             break
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
@@ -339,7 +365,7 @@ def query_openrouter(
         if reasoning_only:
             detail = (
                 " The response contained reasoning but no visible output tokens; "
-                "increase --max-new-tokens."
+                f"the {token_ceiling}-token OpenRouter hard cap was reached."
             )
         else:
             detail = " Choose a model with a logprob-capable provider."
@@ -701,6 +727,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-k", "--top-k", type=int, default=20)
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument(
+        "--max-openrouter-tokens",
+        type=int,
+        default=16384,
+        help=(
+            "Hard cap for automatic OpenRouter budget growth when reasoning "
+            "exhausts --max-new-tokens (default: 16384)"
+        ),
+    )
+    parser.add_argument(
         "--device",
         help=(
             "PyTorch device such as cpu, cuda, or cuda:1; auto (the default) "
@@ -714,6 +749,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--top-k must be between 1 and 20 (OpenRouter API limit)")
     if args.max_new_tokens < 1:
         parser.error("--max-new-tokens must be at least 1")
+    if args.max_openrouter_tokens < args.max_new_tokens:
+        parser.error("--max-openrouter-tokens must be at least --max-new-tokens")
     return args
 
 
@@ -743,6 +780,7 @@ def main() -> int:
                 args.max_new_tokens,
                 api_key,
                 args.openrouter_provider,
+                args.max_openrouter_tokens,
             )
             huggingface_result = query_huggingface(
                 args.hf_model,
