@@ -778,10 +778,15 @@ def compute_summary_stats(
     )
 
 
-def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
+def print_summary_stats(
+    stats: SummaryStats,
+    top_k: int,
+    openrouter_model: str,
+) -> None:
     print(f"\n{'=' * 50}")
     print("AVERAGE STATS SUMMARY")
     print(f"{'=' * 50}")
+    print(f"Model slug:                     {_model_slug(openrouter_model)}")
     print(f"Total queries evaluated:         {stats.total_queries}")
     print(f"Queries skipped (long reasoning):{stats.skipped_reasoning_queries:>8}")
     print(f"Total generation steps:          {stats.total_steps}")
@@ -1220,7 +1225,7 @@ def main() -> int:
         skipped_reasoning_queries=skipped_reasoning_queries,
         elapsed_seconds=time.monotonic() - queries_started,
     )
-    print_summary_stats(summary_stats, args.top_k)
+    print_summary_stats(summary_stats, args.top_k, args.openrouter_model)
 
     if args.json_output:
         save_json(

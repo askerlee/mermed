@@ -991,7 +991,12 @@ class StatsComputationTest(unittest.TestCase):
 
         output = io.StringIO()
         with redirect_stdout(output):
-            print_summary_stats(summary, top_k=5)
+            print_summary_stats(
+                summary,
+                top_k=5,
+                openrouter_model="moonshotai/Kimi-K2.5",
+            )
+        self.assertIn("Model slug:                     kimi-k2-5", output.getvalue())
         self.assertIn("Top-k used:                      5", output.getvalue())
         self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
         self.assertIn("Queries skipped (long reasoning):       3", output.getvalue())
