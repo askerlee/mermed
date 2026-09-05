@@ -20,6 +20,7 @@ from compare_logprobs import (
     compute_summary_stats,
     main,
     parse_args,
+    print_comparison,
     query_openrouter,
 )
 
@@ -478,6 +479,36 @@ class HuggingFacePromptTest(unittest.TestCase):
             rendered,
             "USER:Question\nANSWER:<think>\nReasoning trace\n</think>\n\n visible",
         )
+
+
+class ComparisonOutputTest(unittest.TestCase):
+    def test_prints_only_first_and_last_ten_steps(self):
+        steps = [
+            GenerationStep(
+                f" token-{index}",
+                [TokenLogprob(f" token-{index}", -0.1)],
+            )
+            for index in range(1, 31)
+        ]
+        result = ModelResult(
+            "openrouter",
+            "model",
+            "".join(step.generated_token for step in steps),
+            steps,
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            print_comparison(result, result)
+
+        rendered = output.getvalue()
+        self.assertIn("=== Generation step 10 ===", rendered)
+        self.assertNotIn("=== Generation step 11 ===", rendered)
+        self.assertNotIn("=== Generation step 20 ===", rendered)
+        self.assertIn("=== Generation step 21 ===", rendered)
+        self.assertIn("=== Generation step 30 ===", rendered)
+        self.assertIn("10 generation steps omitted", rendered)
+        self.assertNotIn("token-15", rendered)
 
     def test_loops_over_example_queries_when_prompt_is_none(self):
         reference_steps = [

@@ -627,14 +627,36 @@ def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
 def print_comparison(left: ModelResult, right: ModelResult) -> None:
     print(f"OpenRouter:   {left.model}")
     print(f"Hugging Face: {right.model}")
-    print(f"Reference continuation (OpenRouter): {left.generated_text!r}")
+    step_count = max(len(left.steps), len(right.steps))
+    if step_count > 20:
+        first_text = "".join(step.generated_token for step in left.steps[:10])
+        last_text = "".join(step.generated_token for step in left.steps[-10:])
+        print(
+            "Reference continuation (OpenRouter): "
+            f"{first_text!r} ... [{step_count - 20} tokens omitted] ... {last_text!r}"
+        )
+    else:
+        print(f"Reference continuation (OpenRouter): {left.generated_text!r}")
     if right.teacher_forced:
         print("Hugging Face was teacher-forced along that continuation.")
+    elif len(right.steps) > 20:
+        first_text = "".join(step.generated_token for step in right.steps[:10])
+        last_text = "".join(step.generated_token for step in right.steps[-10:])
+        print(
+            "Hugging Face generated: "
+            f"{first_text!r} ... [{len(right.steps) - 20} tokens omitted] ... "
+            f"{last_text!r}"
+        )
     else:
         print(f"Hugging Face generated: {right.generated_text!r}")
 
-    step_count = max(len(left.steps), len(right.steps))
-    for step_index in range(step_count):
+    if step_count > 20:
+        step_indexes = [*range(10), *range(step_count - 10, step_count)]
+    else:
+        step_indexes = range(step_count)
+    for position, step_index in enumerate(step_indexes):
+        if step_count > 20 and position == 10:
+            print(f"\n... {step_count - 20} generation steps omitted ...")
         print(f"\n=== Generation step {step_index + 1} ===")
         left_step = left.steps[step_index] if step_index < len(left.steps) else None
         right_step = right.steps[step_index] if step_index < len(right.steps) else None
