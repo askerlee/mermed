@@ -167,6 +167,7 @@ def query_openrouter(
         "temperature": 0,
         "logprobs": True,
         "top_logprobs": top_k,
+        "reasoning": {"effort": "none"},
         "provider": {"require_parameters": True},
     }
     request = urllib.request.Request(
@@ -558,7 +559,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--openrouter-model", required=True)
     parser.add_argument("--hf-model", required=True, help="Hub model ID or local path")
     parser.add_argument("-k", "--top-k", type=int, default=20)
-    parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument(
         "--device",
         help=(

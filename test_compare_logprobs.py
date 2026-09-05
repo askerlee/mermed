@@ -94,6 +94,7 @@ class OpenRouterTest(unittest.TestCase):
         request_body = json.loads(request.data)
         self.assertTrue(request_body["logprobs"])
         self.assertEqual(request_body["top_logprobs"], 2)
+        self.assertEqual(request_body["reasoning"], {"effort": "none"})
         self.assertEqual(request_body["provider"], {"require_parameters": True})
         self.assertEqual(result.generated_text, " Paris")
         self.assertEqual(result.steps[0].generated_token, " Paris")

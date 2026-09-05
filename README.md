@@ -18,6 +18,10 @@ silently ignore `logprobs`; if no compatible route exists, choose another
 model. Models on the Hugging Face Hub are downloaded on first use; `--hf-model`
 can instead point to a local model directory.
 
+The OpenRouter request disables reasoning so `--max-new-tokens` is spent on
+visible completion tokens. OpenRouter does not return content logprobs for
+reasoning tokens, so those tokens cannot be used in this comparison.
+
 ## Usage
 
 ```bash
