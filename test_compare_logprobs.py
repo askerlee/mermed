@@ -94,6 +94,7 @@ class OpenRouterTest(unittest.TestCase):
         request_body = json.loads(request.data)
         self.assertTrue(request_body["logprobs"])
         self.assertEqual(request_body["top_logprobs"], 2)
+        self.assertEqual(request_body["provider"], {"require_parameters": True})
         self.assertEqual(result.generated_text, " Paris")
         self.assertEqual(result.steps[0].generated_token, " Paris")
         self.assertEqual(result.steps[0].top_tokens[1].token, " Lyon")
@@ -141,6 +142,27 @@ class OpenRouterTest(unittest.TestCase):
             return_value=FakeResponse(json.dumps(response).encode()),
         ):
             with self.assertRaisesRegex(RuntimeError, "no generated-token logprobs"):
+                query_openrouter("vendor/model", "The capital is", 2, 1, "test-key")
+
+    def test_explains_reasoning_only_response_without_logprobs(self):
+        response = {
+            "provider": "Example Provider",
+            "choices": [
+                {
+                    "message": {"content": None, "reasoning": "The"},
+                    "logprobs": None,
+                }
+            ],
+        }
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=FakeResponse(json.dumps(response).encode()),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Example Provider.*reasoning but no output tokens",
+            ):
                 query_openrouter("vendor/model", "The capital is", 2, 1, "test-key")
 
 

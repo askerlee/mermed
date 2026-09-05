@@ -12,9 +12,11 @@ python -m pip install -r requirements.txt
 export OPENROUTER_API_KEY="..."
 ```
 
-The selected OpenRouter model and provider must support token logprobs. Models
-on the Hugging Face Hub are downloaded on first use; `--hf-model` can instead
-point to a local model directory.
+The selected OpenRouter model and provider must support token logprobs. The
+request requires parameter support so OpenRouter excludes providers that would
+silently ignore `logprobs`; if no compatible route exists, choose another
+model. Models on the Hugging Face Hub are downloaded on first use; `--hf-model`
+can instead point to a local model directory.
 
 ## Usage
 

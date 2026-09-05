@@ -167,6 +167,7 @@ def query_openrouter(
         "temperature": 0,
         "logprobs": True,
         "top_logprobs": top_k,
+        "provider": {"require_parameters": True},
     }
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -191,12 +192,25 @@ def query_openrouter(
 
     try:
         choice = body["choices"][0]
-        content_logprobs = choice["logprobs"]["content"]
-        generated_text = choice["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as error:
         raise RuntimeError(
-            "OpenRouter response did not contain token logprobs. "
-            f"The selected model may not support them: {body}"
+            f"OpenRouter returned an invalid chat completion: {body}"
+        ) from error
+    if choice.get("logprobs") is None:
+        provider = body.get("provider", "unknown provider")
+        message = choice.get("message") or {}
+        reasoning_only = message.get("reasoning") and not message.get("content")
+        detail = " The response contained reasoning but no output tokens." if reasoning_only else ""
+        raise RuntimeError(
+            f"OpenRouter provider {provider!r} did not return token logprobs.{detail} "
+            "Choose a model with a logprob-capable provider."
+        )
+    try:
+        content_logprobs = choice["logprobs"]["content"]
+        generated_text = choice["message"]["content"] or ""
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(
+            f"OpenRouter returned malformed token logprobs: {choice.get('logprobs')}"
         ) from error
     if not content_logprobs:
         raise RuntimeError("OpenRouter returned no generated-token logprobs")
