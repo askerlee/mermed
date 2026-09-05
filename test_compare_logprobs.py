@@ -5,11 +5,13 @@ import unittest
 import urllib.error
 from argparse import Namespace
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from compare_logprobs import (
     EXAMPLE_QUERIES,
+    MEDICAL_QUERIES,
     GenerationStep,
     ModelResult,
     ReasoningBudgetExceeded,
@@ -730,6 +732,56 @@ class ComparisonOutputTest(unittest.TestCase):
         called_prompts = [call.args[1] for call in mock_openrouter.call_args_list]
         self.assertEqual(called_prompts, list(EXAMPLE_QUERIES))
 
+    def test_loops_over_medical_queries_when_selected(self):
+        reference_steps = [
+            GenerationStep(" first", [TokenLogprob(" first", -0.1)]),
+        ]
+        openrouter_result = ModelResult(
+            "openrouter", "remote/model", " first", reference_steps
+        )
+        huggingface_result = ModelResult(
+            "huggingface",
+            "local/model",
+            " first",
+            reference_steps,
+            teacher_forced=True,
+        )
+        args = Namespace(
+            prompt=None,
+            medical_queries=True,
+            openrouter_model="remote/model",
+            openrouter_provider=None,
+            hf_model="local/model",
+            top_k=20,
+            max_new_tokens=1,
+            max_openrouter_tokens=1000,
+            max_reasoning_tokens=None,
+            reasoning_effort="low",
+            device="cpu",
+            json_output=None,
+        )
+
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            patch("compare_logprobs.parse_args", return_value=args),
+            patch(
+                "compare_logprobs.query_openrouter",
+                return_value=openrouter_result,
+            ) as mock_openrouter,
+            patch(
+                "compare_logprobs.query_huggingface",
+                return_value=huggingface_result,
+            ),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(MEDICAL_QUERIES), 20)
+        called_prompts = [call.args[1] for call in mock_openrouter.call_args_list]
+        self.assertEqual(called_prompts, list(MEDICAL_QUERIES))
+
     def test_skips_failed_query_and_excludes_it_from_summary(self):
         reference_steps = [
             GenerationStep(" first", [TokenLogprob(" first", -0.1)]),
@@ -916,6 +968,60 @@ class ArgParseTest(unittest.TestCase):
             self.assertEqual(args.max_openrouter_tokens, 4100)
             self.assertEqual(args.max_reasoning_tokens, 4000)
             self.assertIsNone(args.reasoning_effort)
+            self.assertEqual(
+                args.json_output,
+                Path("local-model-remote-model.json"),
+            )
+
+    def test_explicit_json_output_overrides_default(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+                "--json-output",
+                "custom.json",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.json_output, Path("custom.json"))
+
+    def test_medical_queries_flag(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--medical-queries",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertTrue(args.medical_queries)
+        self.assertIsNone(args.prompt)
+
+    def test_medical_queries_rejects_positional_prompt(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "custom prompt",
+                "--medical-queries",
+                "--openrouter-model",
+                "remote/model",
+                "--hf-model",
+                "local/model",
+            ],
+        ):
+            with self.assertRaises(SystemExit):
+                parse_args()
 
     def test_numeric_reasoning_cap_disables_default_effort(self):
         with patch(

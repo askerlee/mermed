@@ -79,17 +79,28 @@ python compare_logprobs.py \
   --top-k 20 \
   --max-new-tokens 100 \
   --max-reasoning-tokens 4000 \
-  --max-openrouter-tokens 4100 \
-  --json-output comparison.json
+  --max-openrouter-tokens 4100
 
 # If prompt is omitted, it evaluates all EXAMPLE_QUERIES and computes average stats:
 python compare_logprobs.py \
   --openrouter-model openai/gpt-4.1-mini \
   --hf-model Qwen/Qwen2.5-1.5B-Instruct \
   --top-k 20 \
-  --max-new-tokens 3 \
-  --json-output comparison.json
+  --max-new-tokens 3
+
+# Evaluate the 20 built-in medical prompts instead:
+python compare_logprobs.py \
+  --medical-queries \
+  --openrouter-model openai/gpt-4.1-mini \
+  --hf-model Qwen/Qwen2.5-1.5B-Instruct \
+  --top-k 20 \
+  --max-new-tokens 3
 ```
+
+Results are written by default to a filename formed from the Hugging Face and
+OpenRouter model slugs. The examples above write to
+`qwen-qwen2-5-1-5b-instruct-openai-gpt-4-1-mini.json`. Use `--json-output` to
+choose a different path.
 
 Use `--openrouter-provider` to restrict routing to one provider, for example
 `fireworks`, `morph`, or `digitalocean`. The provider must offer the selected

@@ -41,6 +41,29 @@ EXAMPLE_QUERIES = (
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
 )
 
+MEDICAL_QUERIES = (
+    "A 52-year-old patient reports intermittent chest pressure during exertion that resolves with rest, but their initial electrocardiogram is normal. Develop a differential diagnosis, identify the most important next steps, and explain which findings would require urgent escalation.",
+    "An older adult taking eight medications develops dizziness and two recent falls. Describe how a clinician should review possible medication causes, balance competing treatment goals, and involve the patient in a safer plan.",
+    "A child presents with fever, sore throat, and a rash during a local viral outbreak. Explain how to distinguish likely causes, choose appropriate testing, and communicate uncertainty and return precautions to the family.",
+    "A patient with type 2 diabetes has worsening glucose control despite reporting good adherence. Build an assessment that considers medication effectiveness, daily routines, access barriers, other illnesses, and the patient's priorities before recommending changes.",
+    "A rural clinic must decide whether to transfer a pregnant patient with rising blood pressure to a distant hospital. Analyze the maternal and fetal risks, transport constraints, monitoring options, and thresholds that should drive the decision.",
+    "A patient requests antibiotics for a persistent cough after being told the illness is probably viral. Develop a response that addresses symptoms and concerns, supports antibiotic stewardship, and specifies when reevaluation or testing is warranted.",
+    "Two screening tests are available for a cancer: one is more sensitive but produces more false positives, while the other is more specific but misses some early disease. Explain how prevalence, downstream procedures, patient preferences, and health-system capacity should shape a screening strategy.",
+    "A hospital notices worse postoperative outcomes among patients who need interpreters. Propose an investigation that separates language barriers from other factors, and recommend interventions and measures that could reduce inequity without blaming patients.",
+    "A patient with chronic pain reports limited benefit from current treatment and is worried about dependence on medication. Design a reassessment that covers function, safety, mental health, non-drug options, and shared decisions about changing therapy.",
+    "During an influenza surge, an emergency department has more patients than monitored beds. Propose a triage and reassessment process that accounts for severity, risk of deterioration, infection control, and fairness.",
+    "A patient newly diagnosed with early-stage prostate cancer is choosing between active surveillance, surgery, and radiation. Explain how prognosis, treatment harms, uncertainty, and personal values should be integrated into shared decision-making.",
+    "A clinician suspects intimate partner violence but the patient has not disclosed abuse and is accompanied by their partner. Describe a trauma-informed approach to privacy, screening, immediate safety, documentation, and follow-up.",
+    "A nursing home is experiencing recurrent urinary tract infection diagnoses and high antibiotic use. Design a quality-improvement plan that distinguishes infection from asymptomatic bacteriuria, supports staff decisions, and monitors unintended harms.",
+    "A patient with advanced heart failure has repeated hospitalizations and says they want to remain at home, while family members request every possible life-prolonging treatment. Outline a goals-of-care process that addresses prognosis, capacity, family conflict, and feasible home support.",
+    "A new diagnostic model predicts sepsis risk but performs less accurately for one demographic group. Evaluate whether and how it should be deployed, including validation, clinician oversight, patient safety, transparency, and monitoring for bias.",
+    "A teenager seeks confidential reproductive health care and asks that their parents not be told. Explain how a clinician should approach confidentiality, consent, safety assessment, local legal constraints, and supportive communication.",
+    "A patient develops fatigue and mild anemia several months after gastrointestinal surgery. Construct a diagnostic approach that considers nutritional deficiencies, bleeding, inflammation, and other causes, then explain how testing should be prioritized.",
+    "A public health department must respond to declining childhood vaccination rates in several neighborhoods. Design a strategy that addresses access, trust, misinformation, community partnerships, and measurement without stigmatizing hesitant families.",
+    "An immunocompromised patient presents with subtle respiratory symptoms and a normal initial chest radiograph. Explain how immune status changes the differential diagnosis, testing threshold, treatment urgency, and follow-up plan.",
+    "A clinical trial reports a modest average benefit but substantial variation in response and adverse effects. Explain how a clinician should interpret the evidence for an individual patient, identify important subgroup and absolute-risk data, and discuss uncertainty.",
+)
+
 
 @dataclass(frozen=True)
 class TokenLogprob:
@@ -646,6 +669,14 @@ def _token_label(token: str) -> str:
     return repr(token)
 
 
+def _model_slug(model: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-") or "model"
+
+
+def _default_json_output(hf_model: str, openrouter_model: str) -> Path:
+    return Path(f"{_model_slug(hf_model)}-{_model_slug(openrouter_model)}.json")
+
+
 def compute_step_stats(
     left_step: GenerationStep,
     right_step: GenerationStep,
@@ -932,7 +963,15 @@ def parse_args() -> argparse.Namespace:
         "prompt",
         nargs="?",
         default=None,
-        help="Prompt supplied to both models (if omitted, loops over EXAMPLE_QUERIES)",
+        help=(
+            "Prompt supplied to both models (if omitted, loops over the selected "
+            "built-in query set)"
+        ),
+    )
+    parser.add_argument(
+        "--medical-queries",
+        action="store_true",
+        help="Use the built-in medical query set instead of EXAMPLE_QUERIES",
     )
     parser.add_argument("--openrouter-model", required=True)
     parser.add_argument(
@@ -972,8 +1011,23 @@ def parse_args() -> argparse.Namespace:
             "shards across multiple CUDA GPUs"
         ),
     )
-    parser.add_argument("--json-output", type=Path)
+    parser.add_argument(
+        "--json-output",
+        type=Path,
+        help=(
+            "Output path (default: <hf-model-slug>-<openrouter-model-slug>.json)"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.prompt is not None and args.medical_queries:
+        parser.error("--medical-queries cannot be combined with a positional prompt")
+
+    if args.json_output is None:
+        args.json_output = _default_json_output(
+            args.hf_model,
+            args.openrouter_model,
+        )
 
     if args.max_reasoning_tokens is None and args.reasoning_effort is None:
         args.max_reasoning_tokens = 4000
@@ -1007,7 +1061,12 @@ def main() -> int:
         print("error: OPENROUTER_API_KEY is not set", file=sys.stderr)
         return 2
 
-    prompts = [args.prompt] if args.prompt is not None else list(EXAMPLE_QUERIES)
+    if args.prompt is not None:
+        prompts = [args.prompt]
+    elif getattr(args, "medical_queries", False):
+        prompts = list(MEDICAL_QUERIES)
+    else:
+        prompts = list(EXAMPLE_QUERIES)
 
     comparisons: list[QueryComparison] = []
     all_step_stats: list[StepStats] = []
