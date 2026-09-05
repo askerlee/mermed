@@ -130,6 +130,7 @@ class SummaryStats:
     avg_openrouter_top1_logprob: float
     avg_hf_top1_logprob: float
     avg_prob_diff: float
+    elapsed_seconds: float | None = None
 
 
 class ReasoningBudgetExceeded(RuntimeError):
@@ -671,7 +672,8 @@ def _token_label(token: str) -> str:
 
 
 def _model_slug(model: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-") or "model"
+    model_name = model.rstrip("/").rsplit("/", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") or "model"
 
 
 def _default_json_output(hf_model: str, openrouter_model: str) -> Path:
@@ -732,6 +734,7 @@ def compute_summary_stats(
     total_queries: int,
     reasoning_token_counts: list[int | None] | None = None,
     skipped_reasoning_queries: int = 0,
+    elapsed_seconds: float | None = None,
 ) -> SummaryStats:
     reported_reasoning_counts = [
         count for count in (reasoning_token_counts or []) if count is not None
@@ -755,6 +758,7 @@ def compute_summary_stats(
             avg_openrouter_top1_logprob=0.0,
             avg_hf_top1_logprob=0.0,
             avg_prob_diff=0.0,
+            elapsed_seconds=elapsed_seconds,
         )
     n = len(all_step_stats)
     return SummaryStats(
@@ -770,6 +774,7 @@ def compute_summary_stats(
         avg_openrouter_top1_logprob=sum(s.openrouter_top1_logprob for s in all_step_stats) / n,
         avg_hf_top1_logprob=sum(s.hf_top1_logprob for s in all_step_stats) / n,
         avg_prob_diff=sum(s.prob_diff for s in all_step_stats) / n,
+        elapsed_seconds=elapsed_seconds,
     )
 
 
@@ -781,6 +786,8 @@ def print_summary_stats(stats: SummaryStats, top_k: int) -> None:
     print(f"Queries skipped (long reasoning):{stats.skipped_reasoning_queries:>8}")
     print(f"Total generation steps:          {stats.total_steps}")
     print(f"Top-k used:                      {top_k}")
+    if stats.elapsed_seconds is not None:
+        print(f"Overall wall-clock time:          {stats.elapsed_seconds:.1f}s")
     reasoning_average = (
         f"{stats.avg_reasoning_tokens:.2f}"
         if stats.avg_reasoning_tokens is not None
@@ -982,7 +989,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--openrouter-concurrency",
         type=int,
-        default=1,
+        default=4,
         help="Number of OpenRouter requests to run concurrently (default: 1)",
     )
     parser.add_argument("--hf-model", required=True, help="Hub model ID or local path")
@@ -1077,6 +1084,7 @@ def main() -> int:
     else:
         prompts = list(EXAMPLE_QUERIES)
 
+    queries_started = time.monotonic()
     comparisons: list[QueryComparison] = []
     all_step_stats: list[StepStats] = []
     skipped_reasoning_queries = 0
@@ -1210,6 +1218,7 @@ def main() -> int:
             for comparison in comparisons
         ],
         skipped_reasoning_queries=skipped_reasoning_queries,
+        elapsed_seconds=time.monotonic() - queries_started,
     )
     print_summary_stats(summary_stats, args.top_k)
 

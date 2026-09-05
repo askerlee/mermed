@@ -106,9 +106,10 @@ python compare_logprobs.py \
 ```
 
 Results are written by default to a filename formed from the Hugging Face and
-OpenRouter model slugs. The examples above write to
-`qwen-qwen2-5-1-5b-instruct-openai-gpt-4-1-mini.json`. Use `--json-output` to
-choose a different path.
+OpenRouter model-name slugs, excluding their organization or institution
+names. The examples above write to
+`qwen2-5-1-5b-instruct-gpt-4-1-mini.json`. Use `--json-output` to choose a
+different path.
 
 Use `--openrouter-provider` to restrict routing to one provider, for example
 `fireworks`, `morph`, or `digitalocean`. The provider must offer the selected

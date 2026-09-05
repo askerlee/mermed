@@ -975,6 +975,7 @@ class StatsComputationTest(unittest.TestCase):
             total_queries=2,
             reasoning_token_counts=[100, 300],
             skipped_reasoning_queries=3,
+            elapsed_seconds=123.456,
         )
         self.assertEqual(summary.total_queries, 2)
         self.assertEqual(summary.skipped_reasoning_queries, 3)
@@ -986,6 +987,7 @@ class StatsComputationTest(unittest.TestCase):
         self.assertAlmostEqual(summary.avg_openrouter_top1_prob, 0.7)
         self.assertAlmostEqual(summary.avg_hf_top1_prob, 0.6)
         self.assertAlmostEqual(summary.avg_prob_diff, 0.1)
+        self.assertAlmostEqual(summary.elapsed_seconds, 123.456)
 
         output = io.StringIO()
         with redirect_stdout(output):
@@ -993,6 +995,7 @@ class StatsComputationTest(unittest.TestCase):
         self.assertIn("Top-k used:                      5", output.getvalue())
         self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
         self.assertIn("Queries skipped (long reasoning):       3", output.getvalue())
+        self.assertIn("Overall wall-clock time:          123.5s", output.getvalue())
 
         query_output = io.StringIO()
         with redirect_stdout(query_output):
@@ -1010,23 +1013,23 @@ class ArgParseTest(unittest.TestCase):
             [
                 "compare_logprobs.py",
                 "--openrouter-model",
-                "remote/model",
+                "openai/gpt-4.1-mini",
                 "--openrouter-provider",
                 "fireworks",
                 "--hf-model",
-                "local/model",
+                "Qwen/Qwen2.5-1.5B-Instruct",
             ],
         ):
             args = parse_args()
             self.assertIsNone(args.prompt)
-            self.assertEqual(args.openrouter_model, "remote/model")
+            self.assertEqual(args.openrouter_model, "openai/gpt-4.1-mini")
             self.assertEqual(args.openrouter_provider, "fireworks")
             self.assertEqual(args.max_openrouter_tokens, 4100)
             self.assertEqual(args.max_reasoning_tokens, 4000)
             self.assertIsNone(args.reasoning_effort)
             self.assertEqual(
                 args.json_output,
-                Path("local-model-remote-model.json"),
+                Path("qwen2-5-1-5b-instruct-gpt-4-1-mini.json"),
             )
 
     def test_explicit_json_output_overrides_default(self):
