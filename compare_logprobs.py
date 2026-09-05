@@ -676,8 +676,15 @@ def _model_slug(model: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", model_name.lower()).strip("-") or "model"
 
 
-def _default_json_output(hf_model: str, openrouter_model: str) -> Path:
-    return Path(f"{_model_slug(hf_model)}-{_model_slug(openrouter_model)}.json")
+def _default_json_output(
+    hf_model: str,
+    openrouter_model: str,
+    medical_queries: bool = False,
+) -> Path:
+    query_suffix = "-medical" if medical_queries else ""
+    return Path(
+        f"{_model_slug(hf_model)}-{_model_slug(openrouter_model)}{query_suffix}.json"
+    )
 
 
 def compute_step_stats(
@@ -1034,7 +1041,8 @@ def parse_args() -> argparse.Namespace:
         "--json-output",
         type=Path,
         help=(
-            "Output path (default: <hf-model-slug>-<openrouter-model-slug>.json)"
+            "Output path (default: <hf-model-slug>-<openrouter-model-slug>.json; "
+            "adds -medical with --medical-queries)"
         ),
     )
     args = parser.parse_args()
@@ -1046,6 +1054,7 @@ def parse_args() -> argparse.Namespace:
         args.json_output = _default_json_output(
             args.hf_model,
             args.openrouter_model,
+            args.medical_queries,
         )
 
     if args.max_reasoning_tokens is None and args.reasoning_effort is None:

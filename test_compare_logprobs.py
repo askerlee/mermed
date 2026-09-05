@@ -1070,6 +1070,7 @@ class ArgParseTest(unittest.TestCase):
 
         self.assertTrue(args.medical_queries)
         self.assertIsNone(args.prompt)
+        self.assertEqual(args.json_output, Path("model-model-medical.json"))
 
     def test_medical_queries_rejects_positional_prompt(self):
         with patch(
