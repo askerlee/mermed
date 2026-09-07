@@ -18,11 +18,12 @@ silently ignore `logprobs`; if no compatible route exists, choose another
 model. Models on the Hugging Face Hub are downloaded on first use; `--hf-model`
 can instead point to a local model directory.
 
-OpenRouter reasoning is allowed when the model requires or chooses it. The
-reasoning trace is retained but excluded from similarity statistics because
-OpenRouter supplies `logprobs.content` only for visible completion tokens. The
-local model is prefixed with the same reasoning trace before it is
-teacher-forced along those visible tokens. Models whose chat templates support
+OpenRouter reasoning is allowed when the model requires or chooses it. Because
+OpenRouter does not supply reasoning logprobs, the reasoning comparison reports
+only exact top-1 matches: the trace is tokenized with the local tokenizer and
+teacher-forced through the local model from the start of its response. The local
+model is then prefixed with the same reasoning trace before it is teacher-forced
+along the visible tokens. Models whose chat templates support
 `reasoning_content` receive it structurally; other templates use
 `<think>...</think>` markers as a fallback.
 
@@ -107,10 +108,23 @@ python compare_logprobs.py \
 
 Results are written by default to a filename formed from the Hugging Face and
 OpenRouter model-name slugs, excluding their organization or institution
-names. The examples above write to
-`qwen2-5-1-5b-instruct-gpt-4-1-mini.json`; the medical-query example writes to
-`qwen2-5-1-5b-instruct-gpt-4-1-mini-medical.json`. Use `--json-output` to
-choose a different path.
+names in the `results/` directory. The examples above write to
+`results/qwen2-5-1-5b-instruct-gpt-4-1-mini.json`; the medical-query example
+writes to `results/qwen2-5-1-5b-instruct-gpt-4-1-mini-medical.json`. Use
+`--json-output` to choose a different path.
+
+To rerun local scoring without making new OpenRouter requests, pass a previous
+single-query or batch result file with `--input-json`. The prompts, visible
+reference tokens, reasoning traces, and OpenRouter metadata are loaded from the
+file; only the Hugging Face model is run. No `OPENROUTER_API_KEY` is required.
+The default output is written as `results/<input-stem>-offline.json`.
+
+```bash
+python compare_logprobs.py \
+  --input-json results/qwen3-8-27b-kimi-k3-medical.json \
+  --hf-model Qwen/Qwen3-8B \
+  --top-k 5
+```
 
 Use `--openrouter-provider` to restrict routing to one provider, for example
 `fireworks`, `morph`, or `digitalocean`. The provider must offer the selected

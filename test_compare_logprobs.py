@@ -20,8 +20,10 @@ from compare_logprobs import (
     TokenLogprob,
     _huggingface_placement,
     _render_huggingface_prompt,
+    compute_reasoning_stats,
     compute_step_stats,
     compute_summary_stats,
+    load_openrouter_results,
     main,
     parse_args,
     print_comparison,
@@ -499,7 +501,116 @@ class OpenRouterTest(unittest.TestCase):
         self.assertEqual(result.generated_text, " Paris")
 
 
+class OfflineInputTest(unittest.TestCase):
+    def test_loads_single_and_batch_result_files(self):
+        saved_result = {
+            "provider": "openrouter",
+            "model": "remote/model",
+            "generated_text": " answer",
+            "steps": [
+                {
+                    "generated_token": " answer",
+                    "top_tokens": [
+                        {"token": " answer", "logprob": -0.1},
+                        {"token": " response", "logprob": -1.5},
+                    ],
+                }
+            ],
+            "reasoning_text": "Think first",
+            "reasoning_tokens": 2,
+        }
+        single = {"prompt": "Question one", "results": [saved_result]}
+        batch = {
+            "queries": [
+                {"prompt": "Question one", "results": [saved_result]},
+                {"prompt": "Question two", "results": [saved_result]},
+            ]
+        }
+
+        for payload, expected_prompts in (
+            (single, ["Question one"]),
+            (batch, ["Question one", "Question two"]),
+        ):
+            with self.subTest(expected_prompts=expected_prompts), patch.object(
+                Path, "read_text", return_value=json.dumps(payload)
+            ):
+                loaded = load_openrouter_results(Path("saved.json"))
+
+            self.assertEqual([prompt for prompt, _ in loaded], expected_prompts)
+            for _, result in loaded:
+                self.assertEqual(result.provider, "openrouter")
+                self.assertEqual(result.model, "remote/model")
+                self.assertEqual(result.reasoning_text, "Think first")
+                self.assertEqual(result.reasoning_tokens, 2)
+                self.assertEqual(result.steps[0].generated_token, " answer")
+                self.assertEqual(result.steps[0].top_tokens[1].token, " response")
+
+
 class MainWorkflowTest(unittest.TestCase):
+    def test_offline_mode_reuses_saved_openrouter_result_without_api(self):
+        reference_step = GenerationStep(
+            " answer", [TokenLogprob(" answer", -0.1)]
+        )
+        openrouter_result = ModelResult(
+            "openrouter",
+            "remote/model",
+            " answer",
+            [reference_step],
+            reasoning_text="Think first",
+            reasoning_tokens=2,
+        )
+        huggingface_result = ModelResult(
+            "huggingface",
+            "local/model",
+            " answer",
+            [reference_step],
+            teacher_forced=True,
+        )
+        args = Namespace(
+            prompt=None,
+            medical_queries=False,
+            input_json=Path("saved.json"),
+            openrouter_model=None,
+            openrouter_provider=None,
+            openrouter_concurrency=4,
+            hf_model="local/model",
+            top_k=1,
+            max_new_tokens=1,
+            max_openrouter_tokens=4100,
+            max_reasoning_tokens=None,
+            reasoning_effort=None,
+            device="cpu",
+            json_output=None,
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("compare_logprobs.parse_args", return_value=args),
+            patch(
+                "compare_logprobs.load_openrouter_results",
+                return_value=[("Question", openrouter_result)],
+            ),
+            patch("compare_logprobs.query_openrouter") as query_openrouter,
+            patch(
+                "compare_logprobs.query_huggingface",
+                return_value=huggingface_result,
+            ) as query_huggingface,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        query_openrouter.assert_not_called()
+        self.assertEqual(query_huggingface.call_args.args[1], "Question")
+        self.assertEqual(
+            query_huggingface.call_args.kwargs["reference_tokens"], [" answer"]
+        )
+        self.assertEqual(
+            query_huggingface.call_args.kwargs["reasoning_reference_text"],
+            "Think first",
+        )
+
     def test_huggingface_is_teacher_forced_with_openrouter_tokens(self):
         reference_steps = [
             GenerationStep(" first", [TokenLogprob(" first", -0.1)]),
@@ -896,6 +1007,32 @@ class ComparisonOutputTest(unittest.TestCase):
 
 
 class StatsComputationTest(unittest.TestCase):
+    def test_reasoning_stats_compare_reference_tokens_to_hf_top1(self):
+        result = ModelResult(
+            "huggingface",
+            "local/model",
+            "",
+            [],
+            reasoning_reference_tokens=["Think", " carefully", "."],
+            reasoning_steps=[
+                GenerationStep("Think", [TokenLogprob("Think", -0.1)]),
+                GenerationStep(" first", [TokenLogprob(" first", -0.2)]),
+                GenerationStep(".", [TokenLogprob(".", -0.3)]),
+            ],
+        )
+
+        stats = compute_reasoning_stats(result)
+
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats.total_steps, 3)
+        self.assertEqual(stats.top1_matches, 2)
+        self.assertAlmostEqual(stats.top1_match_rate, 2 / 3)
+
+    def test_reasoning_stats_are_unavailable_without_a_trace(self):
+        result = ModelResult("huggingface", "local/model", "", [])
+
+        self.assertIsNone(compute_reasoning_stats(result))
+
     def test_compute_step_stats_match_and_overlap(self):
         left_step = GenerationStep(
             " Paris",
@@ -976,11 +1113,18 @@ class StatsComputationTest(unittest.TestCase):
             reasoning_token_counts=[100, 300],
             skipped_reasoning_queries=3,
             elapsed_seconds=123.456,
+            reasoning_stats=[
+                SimpleNamespace(total_steps=3, top1_matches=2),
+                SimpleNamespace(total_steps=1, top1_matches=0),
+            ],
         )
         self.assertEqual(summary.total_queries, 2)
         self.assertEqual(summary.skipped_reasoning_queries, 3)
         self.assertEqual(summary.total_steps, 2)
         self.assertEqual(summary.avg_reasoning_tokens, 200)
+        self.assertEqual(summary.reasoning_steps, 4)
+        self.assertEqual(summary.reasoning_top1_matches, 2)
+        self.assertAlmostEqual(summary.reasoning_top1_match_rate, 0.5)
         self.assertAlmostEqual(summary.top1_match_rate, 0.5)
         self.assertAlmostEqual(summary.avg_overlap_count, 2.0)
         self.assertAlmostEqual(summary.avg_overlap_ratio, 0.5)
@@ -999,6 +1143,7 @@ class StatsComputationTest(unittest.TestCase):
         self.assertIn("Model slug:                     kimi-k2-5", output.getvalue())
         self.assertIn("Top-k used:                      5", output.getvalue())
         self.assertIn("Average reasoning tokens:        200.00", output.getvalue())
+        self.assertIn("Reasoning top-1 match rate:       50.00% (2/4)", output.getvalue())
         self.assertIn("Queries skipped (long reasoning):       3", output.getvalue())
         self.assertIn("Overall wall-clock time:          123.5s", output.getvalue())
 
@@ -1007,11 +1152,30 @@ class StatsComputationTest(unittest.TestCase):
             print_query_summary(summary, top_k=5)
         self.assertIn("--- Query summary ---", query_output.getvalue())
         self.assertIn("Reasoning tokens:                200", query_output.getvalue())
+        self.assertIn("Reasoning top-1 matches:          2/4 (50.00%)", query_output.getvalue())
         self.assertIn("Visible generation steps:        2", query_output.getvalue())
         self.assertIn("Top-1 matches:                   1/2 (50.00%)", query_output.getvalue())
 
 
 class ArgParseTest(unittest.TestCase):
+    def test_offline_input_sets_output_path_and_needs_no_openrouter_model(self):
+        with patch(
+            "sys.argv",
+            [
+                "compare_logprobs.py",
+                "--input-json",
+                "results/saved.json",
+                "--hf-model",
+                "local/model",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.input_json, Path("results/saved.json"))
+        self.assertIsNone(args.openrouter_model)
+        self.assertIsNone(args.max_reasoning_tokens)
+        self.assertEqual(args.json_output, Path("results/saved-offline.json"))
+
     def test_prompt_optional(self):
         with patch(
             "sys.argv",
@@ -1034,7 +1198,7 @@ class ArgParseTest(unittest.TestCase):
             self.assertIsNone(args.reasoning_effort)
             self.assertEqual(
                 args.json_output,
-                Path("qwen2-5-1-5b-instruct-gpt-4-1-mini.json"),
+                Path("results/qwen2-5-1-5b-instruct-gpt-4-1-mini.json"),
             )
 
     def test_explicit_json_output_overrides_default(self):
@@ -1070,7 +1234,7 @@ class ArgParseTest(unittest.TestCase):
 
         self.assertTrue(args.medical_queries)
         self.assertIsNone(args.prompt)
-        self.assertEqual(args.json_output, Path("model-model-medical.json"))
+        self.assertEqual(args.json_output, Path("results/model-model-medical.json"))
 
     def test_medical_queries_rejects_positional_prompt(self):
         with patch(

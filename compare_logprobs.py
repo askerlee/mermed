@@ -91,6 +91,15 @@ class ModelResult:
     teacher_forced: bool = False
     reasoning_text: str = ""
     reasoning_tokens: int | None = None
+    reasoning_reference_tokens: list[str] | None = None
+    reasoning_steps: list[GenerationStep] | None = None
+
+
+@dataclass(frozen=True)
+class ReasoningStats:
+    total_steps: int
+    top1_matches: int
+    top1_match_rate: float
 
 
 @dataclass(frozen=True)
@@ -114,6 +123,7 @@ class QueryComparison:
     openrouter_result: ModelResult
     huggingface_result: ModelResult
     step_stats: list[StepStats]
+    reasoning_stats: ReasoningStats | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +132,9 @@ class SummaryStats:
     skipped_reasoning_queries: int
     total_steps: int
     avg_reasoning_tokens: float | None
+    reasoning_steps: int
+    reasoning_top1_matches: int
+    reasoning_top1_match_rate: float | None
     top1_match_rate: float
     avg_overlap_count: float
     avg_overlap_ratio: float
@@ -492,6 +505,7 @@ def query_huggingface(
     tokenizer: Any = None,
     model: Any = None,
     reasoning_text: str = "",
+    reasoning_reference_text: str = "",
 ) -> ModelResult:
     try:
         import torch
@@ -508,6 +522,32 @@ def query_huggingface(
             tokenizer = cached_tokenizer
         if model is None:
             model = cached_model
+
+    reasoning_reference_tokens: list[str] | None = None
+    reasoning_steps: list[GenerationStep] | None = None
+    if reasoning_reference_text:
+        encoded_reasoning = tokenizer(
+            reasoning_reference_text,
+            add_special_tokens=False,
+        )["input_ids"]
+        if hasattr(encoded_reasoning, "tolist"):
+            encoded_reasoning = encoded_reasoning.tolist()
+        if encoded_reasoning and isinstance(encoded_reasoning[0], list):
+            encoded_reasoning = encoded_reasoning[0]
+        reasoning_reference_tokens = [
+            tokenizer.decode([int(token_id)]) for token_id in encoded_reasoning
+        ]
+        reasoning_result = query_huggingface(
+            model_name_or_path,
+            prompt,
+            top_k=1,
+            max_new_tokens=len(reasoning_reference_tokens),
+            device=device,
+            reference_tokens=reasoning_reference_tokens,
+            tokenizer=tokenizer,
+            model=model,
+        )
+        reasoning_steps = reasoning_result.steps
 
     input_device = model.get_input_embeddings().weight.device
 
@@ -600,6 +640,8 @@ def query_huggingface(
                 steps=steps,
                 teacher_forced=True,
                 reasoning_text=reasoning_text,
+                reasoning_reference_tokens=reasoning_reference_tokens,
+                reasoning_steps=reasoning_steps,
             )
 
         for step_index in range(step_count):
@@ -664,6 +706,25 @@ def query_huggingface(
         steps=steps,
         teacher_forced=reference_tokens is not None,
         reasoning_text=reasoning_text,
+        reasoning_reference_tokens=reasoning_reference_tokens,
+        reasoning_steps=reasoning_steps,
+    )
+
+
+def compute_reasoning_stats(result: ModelResult) -> ReasoningStats | None:
+    reference_tokens = result.reasoning_reference_tokens
+    reasoning_steps = result.reasoning_steps
+    if not reference_tokens or not reasoning_steps:
+        return None
+    total_steps = min(len(reference_tokens), len(reasoning_steps))
+    top1_matches = sum(
+        reference_tokens[index] == reasoning_steps[index].generated_token
+        for index in range(total_steps)
+    )
+    return ReasoningStats(
+        total_steps=total_steps,
+        top1_matches=top1_matches,
+        top1_match_rate=top1_matches / total_steps,
     )
 
 
@@ -682,7 +743,7 @@ def _default_json_output(
     medical_queries: bool = False,
 ) -> Path:
     query_suffix = "-medical" if medical_queries else ""
-    return Path(
+    return Path("results") / (
         f"{_model_slug(hf_model)}-{_model_slug(openrouter_model)}{query_suffix}.json"
     )
 
@@ -742,6 +803,7 @@ def compute_summary_stats(
     reasoning_token_counts: list[int | None] | None = None,
     skipped_reasoning_queries: int = 0,
     elapsed_seconds: float | None = None,
+    reasoning_stats: list[ReasoningStats] | None = None,
 ) -> SummaryStats:
     reported_reasoning_counts = [
         count for count in (reasoning_token_counts or []) if count is not None
@@ -751,12 +813,22 @@ def compute_summary_stats(
         if reported_reasoning_counts
         else None
     )
+    reasoning_steps = sum(stat.total_steps for stat in reasoning_stats or [])
+    reasoning_top1_matches = sum(
+        stat.top1_matches for stat in reasoning_stats or []
+    )
+    reasoning_top1_match_rate = (
+        reasoning_top1_matches / reasoning_steps if reasoning_steps else None
+    )
     if not all_step_stats:
         return SummaryStats(
             total_queries=total_queries,
             skipped_reasoning_queries=skipped_reasoning_queries,
             total_steps=0,
             avg_reasoning_tokens=avg_reasoning_tokens,
+            reasoning_steps=reasoning_steps,
+            reasoning_top1_matches=reasoning_top1_matches,
+            reasoning_top1_match_rate=reasoning_top1_match_rate,
             top1_match_rate=0.0,
             avg_overlap_count=0.0,
             avg_overlap_ratio=0.0,
@@ -773,6 +845,9 @@ def compute_summary_stats(
         skipped_reasoning_queries=skipped_reasoning_queries,
         total_steps=n,
         avg_reasoning_tokens=avg_reasoning_tokens,
+        reasoning_steps=reasoning_steps,
+        reasoning_top1_matches=reasoning_top1_matches,
+        reasoning_top1_match_rate=reasoning_top1_match_rate,
         top1_match_rate=sum(1 for s in all_step_stats if s.top1_match) / n,
         avg_overlap_count=sum(s.overlap_count for s in all_step_stats) / n,
         avg_overlap_ratio=sum(s.overlap_ratio for s in all_step_stats) / n,
@@ -806,6 +881,15 @@ def print_summary_stats(
         else "N/A"
     )
     print(f"Average reasoning tokens:        {reasoning_average}")
+    reasoning_match_rate = (
+        f"{stats.reasoning_top1_match_rate:.2%}"
+        if stats.reasoning_top1_match_rate is not None
+        else "N/A"
+    )
+    print(
+        f"Reasoning top-1 match rate:       {reasoning_match_rate} "
+        f"({stats.reasoning_top1_matches}/{stats.reasoning_steps})"
+    )
     match_count = int(round(stats.top1_match_rate * stats.total_steps))
     print(
         f"Top-1 match rate:                {stats.top1_match_rate:.2%} "
@@ -831,6 +915,16 @@ def print_query_summary(stats: SummaryStats, top_k: int) -> None:
     match_count = int(round(stats.top1_match_rate * stats.total_steps))
     print("\n--- Query summary ---")
     print(f"Reasoning tokens:                {reasoning_tokens}")
+    reasoning_match_rate = (
+        f"{stats.reasoning_top1_match_rate:.2%}"
+        if stats.reasoning_top1_match_rate is not None
+        else "N/A"
+    )
+    print(
+        f"Reasoning top-1 matches:          "
+        f"{stats.reasoning_top1_matches}/{stats.reasoning_steps} "
+        f"({reasoning_match_rate})"
+    )
     print(f"Visible generation steps:        {stats.total_steps}")
     print(
         f"Top-1 matches:                   {match_count}/{stats.total_steps} "
@@ -945,10 +1039,15 @@ def save_json(
                 "The OpenRouter output is the reference continuation. Hugging Face is "
                 "teacher-forced along the same accumulated text. Token strings are "
                 "decoded with different tokenizers, so exact token overlap is only a "
-                "surface-form comparison."
+                "surface-form comparison. The OpenRouter reasoning trace is tokenized "
+                "with the Hugging Face tokenizer and teacher-forced separately; only "
+                "top-1 matches are reported because reasoning logprobs are unavailable."
             ),
             "results": [asdict(comp.openrouter_result), asdict(comp.huggingface_result)],
             "step_stats": [asdict(s) for s in comp.step_stats],
+            "reasoning_stats": (
+                asdict(comp.reasoning_stats) if comp.reasoning_stats else None
+            ),
             "summary_stats": asdict(summary_stats),
         }
     else:
@@ -957,7 +1056,9 @@ def save_json(
                 "The OpenRouter output is the reference continuation. Hugging Face is "
                 "teacher-forced along the same accumulated text. Token strings are "
                 "decoded with different tokenizers, so exact token overlap is only a "
-                "surface-form comparison."
+                "surface-form comparison. The OpenRouter reasoning trace is tokenized "
+                "with the Hugging Face tokenizer and teacher-forced separately; only "
+                "top-1 matches are reported because reasoning logprobs are unavailable."
             ),
             "summary_stats": asdict(summary_stats),
             "queries": [
@@ -965,11 +1066,80 @@ def save_json(
                     "prompt": comp.prompt,
                     "results": [asdict(comp.openrouter_result), asdict(comp.huggingface_result)],
                     "step_stats": [asdict(s) for s in comp.step_stats],
+                    "reasoning_stats": (
+                        asdict(comp.reasoning_stats) if comp.reasoning_stats else None
+                    ),
                 }
                 for comp in comparisons
             ],
         }
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(output, indent=2, ensure_ascii=False) + "\n")
+
+
+def _model_result_from_dict(data: dict[str, Any]) -> ModelResult:
+    try:
+        steps = [
+            GenerationStep(
+                generated_token=step["generated_token"],
+                top_tokens=[
+                    TokenLogprob(
+                        token=token["token"],
+                        logprob=float(token["logprob"]),
+                    )
+                    for token in step["top_tokens"]
+                ],
+            )
+            for step in data["steps"]
+        ]
+        return ModelResult(
+            provider=data["provider"],
+            model=data["model"],
+            generated_text=data["generated_text"],
+            steps=steps,
+            teacher_forced=bool(data.get("teacher_forced", False)),
+            reasoning_text=data.get("reasoning_text") or "",
+            reasoning_tokens=data.get("reasoning_tokens"),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError("Input JSON contains a malformed model result") from error
+
+
+def load_openrouter_results(path: Path) -> list[tuple[str, ModelResult]]:
+    try:
+        data = json.loads(path.read_text())
+    except OSError as error:
+        raise RuntimeError(f"Could not read input JSON {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Input file is not valid JSON: {error}") from error
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Input JSON must contain an object")
+    query_data = data.get("queries")
+    if query_data is None:
+        query_data = [data]
+    if not isinstance(query_data, list) or not query_data:
+        raise RuntimeError("Input JSON contains no queries")
+
+    loaded = []
+    for query in query_data:
+        if not isinstance(query, dict) or not isinstance(query.get("prompt"), str):
+            raise RuntimeError("Each input query must contain a prompt")
+        results = query.get("results")
+        if not isinstance(results, list):
+            raise RuntimeError("Each input query must contain model results")
+        openrouter_data = next(
+            (
+                result
+                for result in results
+                if isinstance(result, dict) and result.get("provider") == "openrouter"
+            ),
+            None,
+        )
+        if openrouter_data is None:
+            raise RuntimeError("Each input query must contain an OpenRouter result")
+        loaded.append((query["prompt"], _model_result_from_dict(openrouter_data)))
+    return loaded
 
 
 def parse_args() -> argparse.Namespace:
@@ -993,7 +1163,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use the built-in medical query set instead of EXAMPLE_QUERIES",
     )
-    parser.add_argument("--openrouter-model", required=True)
+    parser.add_argument("--openrouter-model")
+    parser.add_argument(
+        "--input-json",
+        type=Path,
+        help="Reuse saved OpenRouter results instead of making API requests",
+    )
     parser.add_argument(
         "--openrouter-provider",
         help="OpenRouter provider slug to use exclusively, such as fireworks",
@@ -1041,23 +1216,37 @@ def parse_args() -> argparse.Namespace:
         "--json-output",
         type=Path,
         help=(
-            "Output path (default: <hf-model-slug>-<openrouter-model-slug>.json; "
-            "adds -medical with --medical-queries)"
+            "Output path (default: results/<hf-model-slug>-"
+            "<openrouter-model-slug>.json; adds -medical with --medical-queries)"
         ),
     )
     args = parser.parse_args()
 
+    if args.input_json and args.openrouter_model:
+        parser.error("--input-json cannot be combined with --openrouter-model")
+    if not args.input_json and not args.openrouter_model:
+        parser.error("one of --openrouter-model or --input-json is required")
+    if args.input_json and (args.prompt is not None or args.medical_queries):
+        parser.error("--input-json cannot be combined with a prompt or query set")
     if args.prompt is not None and args.medical_queries:
         parser.error("--medical-queries cannot be combined with a positional prompt")
 
     if args.json_output is None:
-        args.json_output = _default_json_output(
-            args.hf_model,
-            args.openrouter_model,
-            args.medical_queries,
+        args.json_output = (
+            Path("results") / f"{args.input_json.stem}-offline.json"
+            if args.input_json
+            else _default_json_output(
+                args.hf_model,
+                args.openrouter_model,
+                args.medical_queries,
+            )
         )
 
-    if args.max_reasoning_tokens is None and args.reasoning_effort is None:
+    if (
+        not args.input_json
+        and args.max_reasoning_tokens is None
+        and args.reasoning_effort is None
+    ):
         args.max_reasoning_tokens = 4000
 
     if not 1 <= args.top_k <= 20:
@@ -1068,30 +1257,39 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-new-tokens must be at least 1")
     if args.max_reasoning_tokens is not None and args.max_reasoning_tokens < 1:
         parser.error("--max-reasoning-tokens must be at least 1")
-    initial_openrouter_tokens = args.max_new_tokens + (
-        args.max_reasoning_tokens
-        or (
-            _REASONING_EFFORT_TOKEN_ALLOWANCE
-            if args.reasoning_effort not in (None, "none")
-            else 0
+    if not args.input_json:
+        initial_openrouter_tokens = args.max_new_tokens + (
+            args.max_reasoning_tokens
+            or (
+                _REASONING_EFFORT_TOKEN_ALLOWANCE
+                if args.reasoning_effort not in (None, "none")
+                else 0
+            )
         )
-    )
-    if args.max_openrouter_tokens < initial_openrouter_tokens:
-        parser.error(
-            "--max-openrouter-tokens must cover the visible-token budget plus "
-            "the reasoning allowance"
-        )
+        if args.max_openrouter_tokens < initial_openrouter_tokens:
+            parser.error(
+                "--max-openrouter-tokens must cover the visible-token budget plus "
+                "the reasoning allowance"
+            )
     return args
 
 
 def main() -> int:
     args = parse_args()
+    input_json = getattr(args, "input_json", None)
     api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
+    if not input_json and not api_key:
         print("error: OPENROUTER_API_KEY is not set", file=sys.stderr)
         return 2
 
-    if args.prompt is not None:
+    if input_json:
+        try:
+            offline_queries = load_openrouter_results(input_json)
+        except RuntimeError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        prompts = [prompt for prompt, _ in offline_queries]
+    elif args.prompt is not None:
         prompts = [args.prompt]
     elif getattr(args, "medical_queries", False):
         prompts = list(MEDICAL_QUERIES)
@@ -1101,6 +1299,7 @@ def main() -> int:
     queries_started = time.monotonic()
     comparisons: list[QueryComparison] = []
     all_step_stats: list[StepStats] = []
+    all_reasoning_stats: list[ReasoningStats] = []
     skipped_reasoning_queries = 0
     openrouter_concurrency = getattr(args, "openrouter_concurrency", 1)
     openrouter_results: list[ModelResult | Exception | None] = [None] * len(prompts)
@@ -1120,30 +1319,37 @@ def main() -> int:
         )
         return result, time.monotonic() - phase_started
 
-    worker_count = min(openrouter_concurrency, len(prompts))
-    print(
-        f"Submitting {len(prompts)} OpenRouter request(s) with "
-        f"concurrency {worker_count}...",
-        file=sys.stderr,
-    )
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(fetch_openrouter, prompt): idx
-            for idx, prompt in enumerate(prompts)
-        }
-        for future in as_completed(futures):
-            result_index = futures[future]
-            try:
-                result, elapsed = future.result()
-                openrouter_results[result_index] = result
-                print(
-                    f"Query {result_index + 1}: OpenRouter finished in "
-                    f"{elapsed:.1f}s with "
-                    f"{result.reasoning_tokens or 'unknown'} reasoning tokens",
-                    file=sys.stderr,
-                )
-            except (ReasoningBudgetExceeded, RuntimeError) as error:
-                openrouter_results[result_index] = error
+    if input_json:
+        openrouter_results = [result for _, result in offline_queries]
+        print(
+            f"Loaded {len(openrouter_results)} OpenRouter result(s) from {input_json}",
+            file=sys.stderr,
+        )
+    else:
+        worker_count = min(openrouter_concurrency, len(prompts))
+        print(
+            f"Submitting {len(prompts)} OpenRouter request(s) with "
+            f"concurrency {worker_count}...",
+            file=sys.stderr,
+        )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(fetch_openrouter, prompt): idx
+                for idx, prompt in enumerate(prompts)
+            }
+            for future in as_completed(futures):
+                result_index = futures[future]
+                try:
+                    result, elapsed = future.result()
+                    openrouter_results[result_index] = result
+                    print(
+                        f"Query {result_index + 1}: OpenRouter finished in "
+                        f"{elapsed:.1f}s with "
+                        f"{result.reasoning_tokens or 'unknown'} reasoning tokens",
+                        file=sys.stderr,
+                    )
+                except (ReasoningBudgetExceeded, RuntimeError) as error:
+                    openrouter_results[result_index] = error
 
     for idx, prompt in enumerate(prompts, start=1):
         if len(prompts) > 1:
@@ -1185,6 +1391,7 @@ def main() -> int:
                     step.generated_token for step in openrouter_result.steps
                 ],
                 reasoning_text=openrouter_result.reasoning_text,
+                reasoning_reference_text=openrouter_result.reasoning_text,
             )
             print(
                 f"Query {idx}: {local_phase} finished in "
@@ -1212,7 +1419,14 @@ def main() -> int:
             query_steps,
             total_queries=1,
             reasoning_token_counts=[openrouter_result.reasoning_tokens],
+            reasoning_stats=(
+                [reasoning_stats]
+                if (reasoning_stats := compute_reasoning_stats(huggingface_result))
+                else None
+            ),
         )
+        if reasoning_stats:
+            all_reasoning_stats.append(reasoning_stats)
         print_query_summary(query_summary, args.top_k)
 
         comparisons.append(
@@ -1221,6 +1435,7 @@ def main() -> int:
                 openrouter_result=openrouter_result,
                 huggingface_result=huggingface_result,
                 step_stats=query_steps,
+                reasoning_stats=reasoning_stats,
             )
         )
 
@@ -1233,8 +1448,14 @@ def main() -> int:
         ],
         skipped_reasoning_queries=skipped_reasoning_queries,
         elapsed_seconds=time.monotonic() - queries_started,
+        reasoning_stats=all_reasoning_stats,
     )
-    print_summary_stats(summary_stats, args.top_k, args.openrouter_model)
+    openrouter_model = (
+        comparisons[0].openrouter_result.model
+        if comparisons
+        else args.openrouter_model or "unknown"
+    )
+    print_summary_stats(summary_stats, args.top_k, openrouter_model)
 
     if args.json_output:
         save_json(
