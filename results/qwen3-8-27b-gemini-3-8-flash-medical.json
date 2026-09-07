@@ -1,0 +1,22 @@
+{
+  "note": "The OpenRouter output is the reference continuation. Hugging Face is teacher-forced along the same accumulated text. Token strings are decoded with different tokenizers, so exact token overlap is only a surface-form comparison. The OpenRouter reasoning trace is tokenized with the Hugging Face tokenizer and teacher-forced separately; only top-1 matches are reported because reasoning logprobs are unavailable.",
+  "summary_stats": {
+    "total_queries": 0,
+    "skipped_reasoning_queries": 0,
+    "total_steps": 0,
+    "avg_reasoning_tokens": null,
+    "reasoning_steps": 0,
+    "reasoning_top1_matches": 0,
+    "reasoning_top1_match_rate": null,
+    "top1_match_rate": 0.0,
+    "avg_overlap_count": 0.0,
+    "avg_overlap_ratio": 0.0,
+    "avg_openrouter_top1_prob": 0.0,
+    "avg_hf_top1_prob": 0.0,
+    "avg_openrouter_top1_logprob": 0.0,
+    "avg_hf_top1_logprob": 0.0,
+    "avg_prob_diff": 0.0,
+    "elapsed_seconds": 0.5423881700262427
+  },
+  "queries": []
+}

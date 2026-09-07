@@ -364,8 +364,6 @@ def query_openrouter(
 
     transient_failures = 0
     adapted_top_k = False
-    retried_parameter_route = False
-    removed_reasoning_cap = False
     while True:
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
@@ -402,29 +400,12 @@ def query_openrouter(
             parameter_routing_error = _is_parameter_routing_error(
                 error.code, details
             )
-            if parameter_routing_error and not retried_parameter_route:
-                print(
-                    "OpenRouter temporarily found no route for the requested "
-                    "parameters; retrying once",
-                    file=sys.stderr,
-                )
-                retried_parameter_route = True
-                continue
-            if (
-                parameter_routing_error
-                and not removed_reasoning_cap
-                and isinstance(payload.get("reasoning"), dict)
-                and "max_tokens" in payload["reasoning"]
-            ):
-                print(
-                    "No OpenRouter route supports the numeric reasoning cap with "
-                    "the required logprob parameters; retrying without the reasoning cap",
-                    file=sys.stderr,
-                )
-                del payload["reasoning"]
-                request = _openrouter_request(payload, api_key)
-                removed_reasoning_cap = True
-                continue
+            if parameter_routing_error:
+                raise RuntimeError(
+                    f"OpenRouter model {model!r} has no provider that supports all "
+                    "required request parameters. This comparison requires logprobs "
+                    "and top_logprobs; choose a model with logprob-capable endpoints."
+                ) from error
             provider_top_k = _provider_top_logprobs_limit(details)
             if (
                 error.code == 400
@@ -470,10 +451,7 @@ def query_openrouter(
         message = choice.get("message") or {}
         reasoning_only = message.get("reasoning") and not message.get("content")
         if reasoning_only:
-            if (
-                (max_reasoning_tokens is not None and not removed_reasoning_cap)
-                or reasoning_effort is not None
-            ):
+            if max_reasoning_tokens is not None or reasoning_effort is not None:
                 reasoning_control = (
                     f"the requested {max_reasoning_tokens}-token reasoning cap"
                     if max_reasoning_tokens is not None

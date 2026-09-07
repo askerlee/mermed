@@ -68,12 +68,11 @@ OpenRouter request is retried once using that provider limit. The local model
 still returns the requested `--top-k`; statistics use the ranks available from
 both models.
 
-If OpenRouter finds model endpoints but rejects every route at its parameter
-filter, the same request is retried once to handle temporary routing changes.
-If that also fails and the request uses the default numeric reasoning cap, it
-is retried once without that optional cap. The total token budget and required
-logprob parameters are preserved, so the comparison remains valid while the
-provider controls how much of the budget is used for reasoning.
+If OpenRouter rejects every route at its parameter filter, the script reports
+that no provider supports all required parameters. Because token logprobs are
+essential to this comparison, models such as Gemini Flash that do not expose
+them cannot be used by removing or ignoring the parameter; choose a model with
+logprob-capable endpoints instead.
 
 Multiple prompts can be submitted concurrently with
 `--openrouter-concurrency`. OpenRouter requests run in parallel and their
