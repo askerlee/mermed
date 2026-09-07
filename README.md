@@ -68,6 +68,13 @@ OpenRouter request is retried once using that provider limit. The local model
 still returns the requested `--top-k`; statistics use the ranks available from
 both models.
 
+If OpenRouter finds model endpoints but rejects every route at its parameter
+filter, the same request is retried once to handle temporary routing changes.
+If that also fails and the request uses the default numeric reasoning cap, it
+is retried once without that optional cap. The total token budget and required
+logprob parameters are preserved, so the comparison remains valid while the
+provider controls how much of the budget is used for reasoning.
+
 Multiple prompts can be submitted concurrently with
 `--openrouter-concurrency`. OpenRouter requests run in parallel and their
 results are restored to prompt order before Hugging Face scoring, which remains

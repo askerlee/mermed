@@ -500,6 +500,83 @@ class OpenRouterTest(unittest.TestCase):
         sleep.assert_not_called()
         self.assertEqual(result.generated_text, " Paris")
 
+    def test_retries_parameter_routing_error_without_numeric_reasoning_cap(self):
+        def unavailable_parameters():
+            return urllib.error.HTTPError(
+                "https://openrouter.ai/api/v1/chat/completions",
+                404,
+                "Not Found",
+                {},
+                FakeResponse(
+                    b'{"error":{"message":"No endpoints found that can handle '
+                    b'the requested parameters","metadata":{"failed_routing_step":'
+                    b'"Filter by Parameters"}}}'
+                ),
+            )
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                unavailable_parameters(),
+                unavailable_parameters(),
+                self.completion_response(),
+            ],
+        ) as urlopen, redirect_stderr(io.StringIO()) as stderr:
+            result = query_openrouter(
+                "vendor/model",
+                "The capital is",
+                5,
+                100,
+                "test-key",
+                max_openrouter_tokens=4100,
+                max_reasoning_tokens=4000,
+            )
+
+        first_body = json.loads(urlopen.call_args_list[0].args[0].data)
+        retried_body = json.loads(urlopen.call_args_list[1].args[0].data)
+        fallback_body = json.loads(urlopen.call_args_list[2].args[0].data)
+        self.assertEqual(first_body["reasoning"], {"max_tokens": 4000})
+        self.assertEqual(retried_body, first_body)
+        self.assertNotIn("reasoning", fallback_body)
+        self.assertEqual(fallback_body["max_tokens"], 4100)
+        self.assertTrue(fallback_body["logprobs"])
+        self.assertEqual(fallback_body["top_logprobs"], 5)
+        self.assertIn("retrying once", stderr.getvalue())
+        self.assertIn("retrying without the reasoning cap", stderr.getvalue())
+        self.assertEqual(result.generated_text, " Paris")
+
+    def test_parameter_routing_retry_preserves_numeric_reasoning_cap(self):
+        unavailable_parameters = urllib.error.HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            404,
+            "Not Found",
+            {},
+            FakeResponse(
+                b'{"error":{"metadata":{"failed_routing_step":'
+                b'"Filter by Parameters"}}}'
+            ),
+        )
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[unavailable_parameters, self.completion_response()],
+        ) as urlopen, redirect_stderr(io.StringIO()):
+            query_openrouter(
+                "vendor/model",
+                "Question",
+                5,
+                100,
+                "test-key",
+                max_openrouter_tokens=4100,
+                max_reasoning_tokens=4000,
+            )
+
+        request_bodies = [
+            json.loads(call.args[0].data) for call in urlopen.call_args_list
+        ]
+        self.assertEqual(request_bodies[1], request_bodies[0])
+        self.assertEqual(request_bodies[1]["reasoning"], {"max_tokens": 4000})
+
 
 class OfflineInputTest(unittest.TestCase):
     def test_loads_single_and_batch_result_files(self):

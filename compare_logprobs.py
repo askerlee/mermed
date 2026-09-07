@@ -178,6 +178,19 @@ def _provider_top_logprobs_limit(details: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _is_parameter_routing_error(code: int, details: str) -> bool:
+    if code != 404:
+        return False
+    try:
+        body = json.loads(details)
+        return (
+            body.get("error", {}).get("metadata", {}).get("failed_routing_step")
+            == "Filter by Parameters"
+        )
+    except (AttributeError, json.JSONDecodeError):
+        return False
+
+
 def _openrouter_request(payload: dict[str, Any], api_key: str) -> urllib.request.Request:
     return urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -351,6 +364,8 @@ def query_openrouter(
 
     transient_failures = 0
     adapted_top_k = False
+    retried_parameter_route = False
+    removed_reasoning_cap = False
     while True:
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
@@ -384,6 +399,32 @@ def query_openrouter(
             break
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
+            parameter_routing_error = _is_parameter_routing_error(
+                error.code, details
+            )
+            if parameter_routing_error and not retried_parameter_route:
+                print(
+                    "OpenRouter temporarily found no route for the requested "
+                    "parameters; retrying once",
+                    file=sys.stderr,
+                )
+                retried_parameter_route = True
+                continue
+            if (
+                parameter_routing_error
+                and not removed_reasoning_cap
+                and isinstance(payload.get("reasoning"), dict)
+                and "max_tokens" in payload["reasoning"]
+            ):
+                print(
+                    "No OpenRouter route supports the numeric reasoning cap with "
+                    "the required logprob parameters; retrying without the reasoning cap",
+                    file=sys.stderr,
+                )
+                del payload["reasoning"]
+                request = _openrouter_request(payload, api_key)
+                removed_reasoning_cap = True
+                continue
             provider_top_k = _provider_top_logprobs_limit(details)
             if (
                 error.code == 400
@@ -429,7 +470,10 @@ def query_openrouter(
         message = choice.get("message") or {}
         reasoning_only = message.get("reasoning") and not message.get("content")
         if reasoning_only:
-            if max_reasoning_tokens is not None or reasoning_effort is not None:
+            if (
+                (max_reasoning_tokens is not None and not removed_reasoning_cap)
+                or reasoning_effort is not None
+            ):
                 reasoning_control = (
                     f"the requested {max_reasoning_tokens}-token reasoning cap"
                     if max_reasoning_tokens is not None
